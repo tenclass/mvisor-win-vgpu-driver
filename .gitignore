@@ -1,1 +1,5 @@
 .vs
+.vscode
+build/
+kernelmode/vgpu/x64/
+usermode/mesa/*
