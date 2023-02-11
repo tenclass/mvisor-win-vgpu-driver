@@ -130,12 +130,14 @@
     <OutDir>$(SolutionDir)..\build\$(SolutionName)\$(Platform)\$(ConfigurationName)\</OutDir>
     <LibraryPath>$(SolutionDir)..\lib\virtio\$(Platform)\;$(LibraryPath)</LibraryPath>
     <IncludePath>$(SolutionDir)..\include\virtio\;$(IncludePath)</IncludePath>
+    <EnableInf2cat>true</EnableInf2cat>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
     <LibraryPath>$(SolutionDir)..\lib\virtio\$(Platform)\;$(LibraryPath)</LibraryPath>
     <IncludePath>$(SolutionDir)..\include\virtio\;$(IncludePath)</IncludePath>
     <OutDir>$(SolutionDir)..\build\$(SolutionName)\$(Platform)\$(ConfigurationName)\</OutDir>
+    <EnableInf2cat>true</EnableInf2cat>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>

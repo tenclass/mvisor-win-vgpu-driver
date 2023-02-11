@@ -142,6 +142,26 @@ VOID DeleteUserShareMemory(PSHARE_MEMORY ShareMemory)
     IoFreeMdl(ShareMemory->pMdl);
 }
 
+VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE resource)
+{
+    if (!resource->bForFence)
+    {
+        DetachResource(VirglContext->DeviceContext, VirglContext->Id, resource->Id);
+    }
+
+    if (resource->bForBuffer)
+    {
+        DetachResourceBacking(VirglContext->DeviceContext, resource);
+        if (resource->Buf.Share.pMdl)
+        {
+            DeleteUserShareMemory(&resource->Buf.Share);
+        }
+        FreeVgpuMemory(resource->Buf.VirtualAddress);
+    }
+
+    UnrefResource(VirglContext->DeviceContext, VirglContext->Id, resource->Id);
+}
+
 NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
     NTSTATUS status = STATUS_UNSUCCESSFUL;
@@ -284,19 +304,8 @@ NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext)
         item = RemoveTailList(&VirglContext->ResourceList);
         resource = CONTAINING_RECORD(item, VIRGL_RESOURCE, Entry);
 
-        DetachResource(VirglContext->DeviceContext, VirglContext->Id, resource->Id);
-        if (resource->bForBuffer)
-        {
-            DetachResourceBacking(VirglContext->DeviceContext, resource);
-            if (resource->Buf.Share.pMdl)
-            {
-                DeleteUserShareMemory(&resource->Buf.Share);
-            }
-            FreeVgpuMemory(resource->Buf.VirtualAddress);
-        }
-        UnrefResource(VirglContext->DeviceContext, VirglContext->Id, resource->Id);
-
         // free resource
+        DeleteResource(VirglContext, resource);
         ExFreeToLookasideListEx(&VirglContext->DeviceContext->VirglResourceLookAsideList, resource);
     }
     SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
@@ -385,11 +394,13 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
     {
         // fence object didn't need buffer
         resource->bForBuffer = FALSE;
+        resource->bForFence = TRUE;
     }
     else
     {
         // VIRGL_CAP_COPY_TRANSFER set size=1 of resource without buffer
         resource->bForBuffer = pCreateResource->size != 1;
+        resource->bForFence = FALSE;
     }
 
     // treat all kind of resources as 3d resoures, they would be handled in virglrenderer
@@ -419,7 +430,11 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
         RtlZeroMemory(resource->Buf.VirtualAddress, resource->Buf.Size);
         AttachResourceBacking(virglContext->DeviceContext, virglContext->Id, resource);
     }
-    AttachResource(virglContext->DeviceContext, virglContext->Id, resource->Id);
+
+    if (!resource->bForFence)
+    {
+        AttachResource(virglContext->DeviceContext, virglContext->Id, resource->Id);
+    }
 
     // insert to the resource list
     ExInterlockedInsertTailList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
@@ -464,19 +479,7 @@ NTSTATUS CtlCloseResource(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         VGPU_DEBUG_LOG("get resource failed id=%d", close->handle);
         return STATUS_UNSUCCESSFUL;
     }
-
-    DetachResource(virglContext->DeviceContext, virglContext->Id, resource->Id);
-    if (resource->bForBuffer)
-    {
-        DetachResourceBacking(virglContext->DeviceContext, resource);
-        if (resource->Buf.Share.pMdl)
-        {
-            DeleteUserShareMemory(&resource->Buf.Share);
-        }
-        FreeVgpuMemory(resource->Buf.VirtualAddress);
-    }
-    UnrefResource(virglContext->DeviceContext, virglContext->Id, resource->Id);
-
+    
     // FIXME: we didn't put resource id back to idr, because it may conflict with migration
 
     // delete the resource from the virgl context resource list
@@ -485,8 +488,9 @@ NTSTATUS CtlCloseResource(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
     SpinUnLock(savedIrql, &virglContext->ResourceListSpinLock);
 
     // free resource
-    VGPU_DEBUG_LOG("close resource id=%d bForBuffer=%d", resource->Id, resource->bForBuffer);
+    DeleteResource(virglContext, resource);
     ExFreeToLookasideListEx(&virglContext->DeviceContext->VirglResourceLookAsideList, resource);
+    VGPU_DEBUG_LOG("close resource id=%d", close->handle);
 
     return status;
 }

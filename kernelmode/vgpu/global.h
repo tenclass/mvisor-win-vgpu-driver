@@ -70,6 +70,7 @@ typedef struct _VIRGL_RESOURCE {
     VIRGL_RESOURCE_BUF  Buf;
     LIST_ENTRY			Entry;
     BOOLEAN             bForBuffer;
+    BOOLEAN             bForFence;
 }VIRGL_RESOURCE, * PVIRGL_RESOURCE;
 
 typedef struct _VIRGL_CONTEXT {

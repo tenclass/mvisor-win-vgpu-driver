@@ -1,0 +1,92 @@
+;
+; vgpu.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGUID={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+CatalogFile=vgpu.cat
+DriverVer = 02/11/2023,15.19.1.40
+PnpLockDown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+vgpu_Device_CoInstaller_CopyFiles = 11
+
+; ================= Class section =====================
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vgpu.sys  = 1,,
+;
+
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%vgpu.DeviceDesc%=vgpu_Device, PCI\VEN_1AF4&DEV_105B&SUBSYS_1100_INX_SUBSYS_VENDOR_ID&REV_01, PCI\VEN_1AF4&DEV_105B
+
+[vgpu_Device.NT]
+CopyFiles=Drivers_Dir
+
+[vgpu_Device.NT.HW]
+AddReg=MSI_Interrupts
+
+[Drivers_Dir]
+vgpu.sys
+
+[MSI_Interrupts]
+HKR,Interrupt Management,,0x00000010
+HKR,Interrupt Management\MessageSignaledInterruptProperties,,0x00000010
+HKR,Interrupt Management\MessageSignaledInterruptProperties,MSISupported,0x00010001,1
+HKR,Interrupt Management\MessageSignaledInterruptProperties,MessageNumberLimit,0x00010001,4
+
+;-------------- Service installation
+[vgpu_Device.NT.Services]
+AddService = vgpu,%SPSVCINST_ASSOCSERVICE%, vgpu_Service_Inst
+
+; -------------- vgpu driver install sections
+[vgpu_Service_Inst]
+DisplayName    = %vgpu.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\vgpu.sys
+
+;
+;--- vgpu_Device Coinstaller installation ------
+;
+
+[vgpu_Device.NT.CoInstallers]
+AddReg=vgpu_Device_CoInstaller_AddReg
+CopyFiles=vgpu_Device_CoInstaller_CopyFiles
+
+[vgpu_Device_CoInstaller_AddReg]
+;
+
+
+[vgpu_Device_CoInstaller_CopyFiles]
+;
+
+
+[vgpu_Device.NT.Wdf]
+KmdfService =  vgpu, vgpu_wdfsect
+[vgpu_wdfsect]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="Tenclass" ;TODO: Replace with your manufacturer name
+ClassName="Tenclass Device" ; TODO: edit ClassName
+DiskName = "vgpu Installation Disk"
+vgpu.DeviceDesc = "Tenclass VGPU"
+vgpu.SVCDESC = "vgpu Service"
