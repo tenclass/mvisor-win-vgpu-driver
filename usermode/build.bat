@@ -15,7 +15,7 @@
 
 @git clone https://gitlab.freedesktop.org/mesa/mesa.git
 @cd mesa
-@git reset --hard 21f0fc65b22afec2bbc173a766ce2d68f8515a25
+@git reset --hard 7ead71739371ffc036883b9ee89318f5c368f4d4
 @git apply ..\mesa-virgl-icd-for-windows.patch
 @meson setup build -Dgallium-drivers=virgl -Dprefix=%1
 @cd build

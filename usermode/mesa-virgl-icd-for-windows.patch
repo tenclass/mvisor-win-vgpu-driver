@@ -1,7 +1,7 @@
-From 70b5f7a00edca88c9076ca6523187a749f1a45cc Mon Sep 17 00:00:00 2001
+From 35dca517e98309b69147849b7c32411b187842b3 Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Mon, 6 Feb 2023 22:18:22 +0800
-Subject: [PATCH] virgl icd for windows
+Date: Sat, 11 Feb 2023 16:14:17 +0800
+Subject: [PATCH] mesa virgl icd for windows
 
 ---
  include/drm-uapi/drm.h                        |   4 +
@@ -19,14 +19,13 @@ Subject: [PATCH] virgl icd for windows
  src/gallium/targets/wgl/wgl.c                 |  43 +-
  src/gallium/winsys/virgl/drm/meson.build      |   2 +-
  .../winsys/virgl/drm/virgl_drm_public.h       |   2 +-
- .../winsys/virgl/drm/virgl_drm_winsys.c       | 160 +++-
+ .../winsys/virgl/drm/virgl_drm_winsys.c       | 164 +++-
  .../winsys/virgl/drm/virgl_drm_winsys.h       |   4 +-
  src/gallium/winsys/virgl/lib/ioctl.h          |  82 ++
  src/gallium/winsys/virgl/lib/meson.build      |  34 +
  src/gallium/winsys/virgl/lib/vgpu_api.c       | 300 ++++++
  src/gallium/winsys/virgl/lib/vgpu_api.h       |  47 +
- src/util/mesa_cache_db.h                      |   7 +-
- 22 files changed, 1675 insertions(+), 36 deletions(-)
+ 21 files changed, 1675 insertions(+), 33 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -80,7 +79,7 @@ index 00000000000..00e87d9aa3a
 + * Copyright (c) 2000 Apple Computer, Inc. All rights reserved.
 + *
 + * @APPLE_LICENSE_HEADER_START@
-+ *
++ * 
 + * The contents of this file constitute Original Code as defined in and
 + * are subject to the Apple Public Source License Version 1.1 (the
 + * "License").  You may not use this file except in compliance with the
@@ -1156,7 +1155,7 @@ index a2766430c5f..73a75b10877 100644
     return &screen->base;
  }
 diff --git a/src/gallium/drivers/virgl/virgl_video.c b/src/gallium/drivers/virgl/virgl_video.c
-index fc2d1b5443d..2abf6768d75 100644
+index f5aa89db141..e3e68eeb0aa 100644
 --- a/src/gallium/drivers/virgl/virgl_video.c
 +++ b/src/gallium/drivers/virgl/virgl_video.c
 @@ -106,7 +106,7 @@ static int fill_base_picture_desc(const struct pipe_picture_desc *desc,
@@ -1361,7 +1360,7 @@ index 32df3945ff4..c3a4fd4f49d 100644
  
  #endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-index 6ae63e75758..2ef6820df66 100644
+index 6ae63e75758..6549f3cbd07 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 @@ -25,10 +25,18 @@
@@ -1618,7 +1617,7 @@ index 6ae63e75758..2ef6820df66 100644
     init.num_params = 1;
  
     ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
-@@ -1203,8 +1270,52 @@ static int virgl_init_context(int drmFD)
+@@ -1203,8 +1270,56 @@ static int virgl_init_context(int drmFD)
     return 0;
  }
  
@@ -1649,6 +1648,10 @@ index 6ae63e75758..2ef6820df66 100644
 +   void *screen_map = vscreen->vws->winsys->displaytarget_map(vscreen->vws->winsys, vres->hw_res->dt, 0);
 +   assert(screen_map);
 +
++   if (vres->hw_res->maybe_busy) {
++      virgl_drm_resource_wait(vscreen->vws, vres->hw_res);
++   }
++
 +   struct pipe_transfer *transfer;
 +   void *res_map = pipe_texture_map(ctx, res, level, layer, PIPE_MAP_READ, 0, 0, res->width0, res->height0, &transfer);
 +   assert(res_map && transfer);
@@ -1672,7 +1675,7 @@ index 6ae63e75758..2ef6820df66 100644
  {
     static const unsigned CACHE_TIMEOUT_USEC = 1000000;
     struct virgl_drm_winsys *qdws;
-@@ -1218,6 +1329,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1218,6 +1333,7 @@ virgl_drm_winsys_create(int drmFD)
        getparam.value = (uint64_t)(uintptr_t)&value;
        ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_GETPARAM, &getparam);
        params[i].value = (ret == 0) ? value : 0;
@@ -1680,7 +1683,7 @@ index 6ae63e75758..2ef6820df66 100644
     }
  
     if (!params[param_3d_features].value)
-@@ -1266,6 +1378,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1266,6 +1382,7 @@ virgl_drm_winsys_create(int drmFD)
     qdws->base.submit_cmd = virgl_drm_winsys_submit_cmd;
     qdws->base.emit_res = virgl_drm_emit_res;
     qdws->base.res_is_referenced = virgl_drm_res_is_ref;
@@ -1688,7 +1691,7 @@ index 6ae63e75758..2ef6820df66 100644
  
     qdws->base.cs_create_fence = virgl_cs_create_fence;
     qdws->base.fence_wait = virgl_fence_wait;
-@@ -1294,9 +1407,9 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+@@ -1294,9 +1411,9 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
     mtx_lock(&virgl_screen_mutex);
     destroy = --screen->refcnt == 0;
     if (destroy) {
@@ -1701,7 +1704,7 @@ index 6ae63e75758..2ef6820df66 100644
     }
     mtx_unlock(&virgl_screen_mutex);
  
-@@ -1343,8 +1456,9 @@ equal_fd(const void *key1, const void *key2)
+@@ -1343,8 +1460,9 @@ equal_fd(const void *key1, const void *key2)
     return false;
  }
  
@@ -1712,7 +1715,7 @@ index 6ae63e75758..2ef6820df66 100644
  {
     struct pipe_screen *pscreen = NULL;
  
-@@ -1355,22 +1469,22 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+@@ -1355,22 +1473,22 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
           goto unlock;
     }
  
@@ -1740,7 +1743,7 @@ index 6ae63e75758..2ef6820df66 100644
  
           /* Bit of a hack, to avoid circular linkage dependency,
            * ie. pipe driver having to call in to winsys, we
-@@ -1383,5 +1497,9 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+@@ -1383,5 +1501,9 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
  
  unlock:
     mtx_unlock(&virgl_screen_mutex);
@@ -2259,31 +2262,6 @@ index 00000000000..0e8d7bfdf0d
 +void DestroyVirglContext(HANDLE handle);
 +
 +#endif
-diff --git a/src/util/mesa_cache_db.h b/src/util/mesa_cache_db.h
-index d88f67ddd4d..e39a07a61f3 100644
---- a/src/util/mesa_cache_db.h
-+++ b/src/util/mesa_cache_db.h
-@@ -39,6 +39,10 @@ struct mesa_cache_db {
-    bool alive;
- };
- 
-+bool
-+mesa_cache_db_entry_remove(struct mesa_cache_db *db,
-+                           const uint8_t *cache_key_160bit);
-+                           
- #if DETECT_OS_WINDOWS == 0
- bool
- mesa_cache_db_open(struct mesa_cache_db *db, const char *cache_path);
-@@ -63,9 +67,6 @@ mesa_cache_db_entry_write(struct mesa_cache_db *db,
-                           const uint8_t *cache_key_160bit,
-                           const void *blob, size_t blob_size);
- 
--bool
--mesa_cache_db_entry_remove(struct mesa_cache_db *db,
--                           const uint8_t *cache_key_160bit);
- 
- bool
- mesa_db_wipe_path(const char *cache_path);
 -- 
 2.29.2.windows.2
 
