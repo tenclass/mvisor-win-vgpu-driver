@@ -111,7 +111,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
         }
         case VIRTIO_GPU_CMD_SUBMIT_3D:
         {
-            if (buffer->Extend != NULL && buffer->ExtendSize > 0)
+            if (buffer->Extend != NULL)
             {
                 PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
                 if (virglContext)
