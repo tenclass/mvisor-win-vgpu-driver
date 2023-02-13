@@ -4,9 +4,9 @@
     <SignMode>TestSign</SignMode>
     <ProductionCertificate>
     </ProductionCertificate>
-    <TestCertificate>CN=Tenclass.com(Nuwa) | DAEA92941D797C26823F605724F9614822794766</TestCertificate>
+    <TestCertificate>CN=Tenclass.com | 752F49BEF9FEA08ED1114DEFAA466F4F231C3475</TestCertificate>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TestCertificate>CN=Tenclass.com(Nuwa) | DAEA92941D797C26823F605724F9614822794766</TestCertificate>
+    <TestCertificate>CN=Tenclass.com | 752F49BEF9FEA08ED1114DEFAA466F4F231C3475</TestCertificate>
   </PropertyGroup>
 </Project>

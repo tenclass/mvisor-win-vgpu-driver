@@ -26,6 +26,15 @@
 #define VIRTIO_VGPU_MEMORY_TAG  ((ULONG)'upgV')
 #define ROUND_UP(x, n)          (((x) + (n) - 1) & (-(n)))
 
+#pragma pack(1)
+struct virtio_vgpu_config {
+    __u8  staging;
+    __u8  num_queues;
+    __u64 memory_size;
+    __u64 capabilities;
+};
+#pragma pack()
+
 typedef struct _VIRTIO_GPU_DRV_CAPSET {
     ULONG32 id;
     ULONG32 max_version;

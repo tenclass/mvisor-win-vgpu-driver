@@ -1,6 +1,6 @@
-From 35dca517e98309b69147849b7c32411b187842b3 Mon Sep 17 00:00:00 2001
+From 89a744af8815beaaff88dfc71d52254529f7e9dc Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Sat, 11 Feb 2023 16:14:17 +0800
+Date: Tue, 14 Feb 2023 11:00:52 +0800
 Subject: [PATCH] mesa virgl icd for windows
 
 ---
@@ -11,21 +11,22 @@ Subject: [PATCH] mesa virgl icd for windows
  src/c11/threads.h                             |   2 +
  src/gallium/drivers/virgl/meson.build         |   2 +-
  src/gallium/drivers/virgl/virgl_context.c     |   2 +
+ src/gallium/drivers/virgl/virgl_resource.c    |  33 +-
  src/gallium/drivers/virgl/virgl_screen.c      |   7 +-
  src/gallium/drivers/virgl/virgl_video.c       |   2 +-
- src/gallium/drivers/virgl/virgl_winsys.h      |   8 +-
+ src/gallium/drivers/virgl/virgl_winsys.h      |  10 +-
  src/gallium/meson.build                       |   2 +-
  src/gallium/targets/wgl/meson.build           |   2 +-
  src/gallium/targets/wgl/wgl.c                 |  43 +-
  src/gallium/winsys/virgl/drm/meson.build      |   2 +-
  .../winsys/virgl/drm/virgl_drm_public.h       |   2 +-
- .../winsys/virgl/drm/virgl_drm_winsys.c       | 164 +++-
+ .../winsys/virgl/drm/virgl_drm_winsys.c       | 197 +++-
  .../winsys/virgl/drm/virgl_drm_winsys.h       |   4 +-
  src/gallium/winsys/virgl/lib/ioctl.h          |  82 ++
  src/gallium/winsys/virgl/lib/meson.build      |  34 +
  src/gallium/winsys/virgl/lib/vgpu_api.c       | 300 ++++++
  src/gallium/winsys/virgl/lib/vgpu_api.h       |  47 +
- 21 files changed, 1675 insertions(+), 33 deletions(-)
+ 22 files changed, 1727 insertions(+), 49 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -1111,11 +1112,83 @@ index 40d1155bea7..41eb0dde9ae 100644
  #include "pipe/p_shader_tokens.h"
  
  #include "compiler/nir/nir.h"
+diff --git a/src/gallium/drivers/virgl/virgl_resource.c b/src/gallium/drivers/virgl/virgl_resource.c
+index 43f92af6923..7fd6af54baa 100644
+--- a/src/gallium/drivers/virgl/virgl_resource.c
++++ b/src/gallium/drivers/virgl/virgl_resource.c
+@@ -36,6 +36,9 @@
+  */
+ #define VIRGL_QUEUED_STAGING_RES_SIZE_LIMIT (128 * 1024 * 1024)
+ 
++// staging switch from driver
++static bool staging = false;
++
+ enum virgl_transfer_map_type {
+    VIRGL_TRANSFER_MAP_ERROR = -1,
+    VIRGL_TRANSFER_MAP_HW_RES,
+@@ -198,6 +201,11 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
+       wait = false;
+    }
+ 
++   /* try to update staging status */
++   if (!staging) {
++      staging = vws->get_param(vws, 0x1000) == 1;
++   }
++
+    /* When the resource is busy but its content can be discarded, we can
+     * replace its HW resource or use a staging buffer to avoid waiting.
+     */
+@@ -220,7 +228,7 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
+       /* discard implies no readback */
+       assert(!readback);
+ 
+-      if (can_realloc || vctx->supports_staging) {
++      if ((can_realloc || vctx->supports_staging) && staging) {
+          /* Both map types have some costs.  Do them only when the resource is
+           * (or will be) busy for real.  Otherwise, set wait to false.
+           */
+@@ -248,6 +256,12 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
+       /* If we are performing readback for textures and renderer supports
+        * copy_transfer_from_host, then we can return here with proper map.
+        */
++
++      /* update res staging status */
++      if (!res->use_staging) {
++         res->use_staging = staging;
++      }
++      
+       if (res->use_staging) {
+          if (xfer->base.usage & PIPE_MAP_READ)
+             return VIRGL_TRANSFER_MAP_READ_FROM_STAGING;
+@@ -657,10 +671,19 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
+       vbind |= VIRGL_BIND_PREFER_EMULATED_BGRA;
+    }
+ 
+-   // If renderer supports copy transfer from host, and we either have support
+-   // for then for textures alloc minimum size of bo
+-   // This size is not passed to the host
+-   res->use_staging = virgl_can_copy_transfer_from_host(vs, res, vbind);
++   // update staging status
++   if (!staging) {
++      staging = vs->vws->get_param(vs->vws, 0x1000) == 1;
++   }
++
++   if (virgl_can_copy_transfer_from_host(vs, res, vbind)) {
++      // If renderer supports copy transfer from host, and we either have support
++      // for then for textures alloc minimum size of bo
++      // This size is not passed to the host
++      res->use_staging = staging;
++   } else {
++      res->use_staging = false;
++   }
+ 
+    if (res->use_staging)
+       alloc_size = 1;
 diff --git a/src/gallium/drivers/virgl/virgl_screen.c b/src/gallium/drivers/virgl/virgl_screen.c
-index a2766430c5f..73a75b10877 100644
+index a63b7cb690a..598eea065b2 100644
 --- a/src/gallium/drivers/virgl/virgl_screen.c
 +++ b/src/gallium/drivers/virgl/virgl_screen.c
-@@ -900,12 +900,11 @@ static void virgl_flush_frontbuffer(struct pipe_screen *screen,
+@@ -901,12 +901,11 @@ static void virgl_flush_frontbuffer(struct pipe_screen *screen,
  {
     struct virgl_screen *vscreen = virgl_screen(screen);
     struct virgl_winsys *vws = vscreen->vws;
@@ -1129,7 +1202,7 @@ index a2766430c5f..73a75b10877 100644
                               sub_box);
     }
  }
-@@ -1021,6 +1020,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
+@@ -1022,6 +1021,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
     return screen->disk_cache;
  }
  
@@ -1137,7 +1210,7 @@ index a2766430c5f..73a75b10877 100644
  static void virgl_disk_cache_create(struct virgl_screen *screen)
  {
     const struct build_id_note *note =
-@@ -1049,6 +1049,7 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
+@@ -1050,6 +1050,7 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
  
     screen->disk_cache = disk_cache_create("virgl", timestamp, 0);
  }
@@ -1145,7 +1218,7 @@ index a2766430c5f..73a75b10877 100644
  
  static bool
  virgl_is_dmabuf_modifier_supported(UNUSED struct pipe_screen *pscreen,
-@@ -1185,6 +1186,8 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
+@@ -1186,6 +1187,8 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
  
     slab_create_parent(&screen->transfer_pool, sizeof(struct virgl_transfer), 16);
  
@@ -1168,7 +1241,7 @@ index f5aa89db141..e3e68eeb0aa 100644
      return 0;
  }
 diff --git a/src/gallium/drivers/virgl/virgl_winsys.h b/src/gallium/drivers/virgl/virgl_winsys.h
-index 13e82b033b4..bed21a2ab1d 100644
+index 13e82b033b4..adebe0d3c68 100644
 --- a/src/gallium/drivers/virgl/virgl_winsys.h
 +++ b/src/gallium/drivers/virgl/virgl_winsys.h
 @@ -45,6 +45,8 @@ struct virgl_cmd_buf {
@@ -1180,7 +1253,16 @@ index 13e82b033b4..bed21a2ab1d 100644
     unsigned pci_id;
     int supports_fences; /* In/Out fences are supported */
     int supports_encoded_transfers; /* Encoded transfers are supported */
-@@ -130,11 +132,13 @@ struct virgl_winsys {
+@@ -52,6 +54,8 @@ struct virgl_winsys {
+ 
+    void (*destroy)(struct virgl_winsys *vws);
+ 
++   uint64_t (*get_param)(struct virgl_winsys *vws, uint64_t param);
++
+    int (*transfer_put)(struct virgl_winsys *vws,
+                        struct virgl_hw_res *res,
+                        const struct pipe_box *box,
+@@ -130,11 +134,13 @@ struct virgl_winsys {
                             struct pipe_fence_handle *src);
  
     /* for sw paths */
@@ -1360,7 +1442,7 @@ index 32df3945ff4..c3a4fd4f49d 100644
  
  #endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-index 6ae63e75758..6549f3cbd07 100644
+index 6ae63e75758..6a2e662e51c 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 @@ -25,10 +25,18 @@
@@ -1617,7 +1699,7 @@ index 6ae63e75758..6549f3cbd07 100644
     init.num_params = 1;
  
     ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
-@@ -1203,8 +1270,56 @@ static int virgl_init_context(int drmFD)
+@@ -1203,21 +1270,85 @@ static int virgl_init_context(int drmFD)
     return 0;
  }
  
@@ -1669,21 +1751,68 @@ index 6ae63e75758..6549f3cbd07 100644
 +   return;
 +}
 +
++static uint64_t virgl_get_param(struct virgl_winsys *vws, uint64_t param)
++{
++   uint64_t value = 0;
++   struct drm_virtgpu_getparam getparam = { 0 };
++   struct virgl_drm_winsys *vdws = virgl_drm_winsys(vws);
++
++   getparam.param = param;
++   getparam.value = (uint64_t)(uintptr_t)&value;
++   if (drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_GETPARAM, &getparam) == 0) {
++      return value;
++   } else {
++      return 0;
++   }
++}
++
  static struct virgl_winsys *
 -virgl_drm_winsys_create(int drmFD)
 +virgl_drm_winsys_create(HANDLE drmFD)
  {
     static const unsigned CACHE_TIMEOUT_USEC = 1000000;
     struct virgl_drm_winsys *qdws;
-@@ -1218,6 +1333,7 @@ virgl_drm_winsys_create(int drmFD)
-       getparam.value = (uint64_t)(uintptr_t)&value;
-       ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_GETPARAM, &getparam);
-       params[i].value = (ret == 0) ? value : 0;
+    int drm_version;
+    int ret;
+ 
++   qdws = CALLOC_STRUCT(virgl_drm_winsys);
++   if (!qdws)
++      return NULL;
++   qdws->fd = drmFD;
++   
+    for (uint32_t i = 0; i < ARRAY_SIZE(params); i++) {
+-      struct drm_virtgpu_getparam getparam = { 0 };
+-      uint64_t value = 0;
+-      getparam.param = params[i].param;
+-      getparam.value = (uint64_t)(uintptr_t)&value;
+-      ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_GETPARAM, &getparam);
+-      params[i].value = (ret == 0) ? value : 0;
++      params[i].value = virgl_get_param(&qdws->base, params[i].param);
 +      _debug_printf("param=%d value=%ld\n", params[i].param, params[i].value);
     }
  
     if (!params[param_3d_features].value)
-@@ -1266,6 +1382,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1233,11 +1364,6 @@ virgl_drm_winsys_create(int drmFD)
+          return NULL;
+    }
+ 
+-   qdws = CALLOC_STRUCT(virgl_drm_winsys);
+-   if (!qdws)
+-      return NULL;
+-
+-   qdws->fd = drmFD;
+    virgl_resource_cache_init(&qdws->cache, CACHE_TIMEOUT_USEC,
+                              virgl_drm_resource_cache_entry_is_busy,
+                              virgl_drm_resource_cache_entry_release,
+@@ -1250,6 +1376,7 @@ virgl_drm_winsys_create(int drmFD)
+    qdws->bo_names = util_hash_table_create_ptr_keys();
+    qdws->base.destroy = virgl_drm_winsys_destroy;
+ 
++   qdws->base.get_param = virgl_get_param;
+    qdws->base.transfer_put = virgl_bo_transfer_put;
+    qdws->base.transfer_get = virgl_bo_transfer_get;
+    qdws->base.resource_create = virgl_drm_winsys_resource_cache_create;
+@@ -1266,6 +1393,7 @@ virgl_drm_winsys_create(int drmFD)
     qdws->base.submit_cmd = virgl_drm_winsys_submit_cmd;
     qdws->base.emit_res = virgl_drm_emit_res;
     qdws->base.res_is_referenced = virgl_drm_res_is_ref;
@@ -1691,7 +1820,7 @@ index 6ae63e75758..6549f3cbd07 100644
  
     qdws->base.cs_create_fence = virgl_cs_create_fence;
     qdws->base.fence_wait = virgl_fence_wait;
-@@ -1294,9 +1411,9 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+@@ -1294,9 +1422,9 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
     mtx_lock(&virgl_screen_mutex);
     destroy = --screen->refcnt == 0;
     if (destroy) {
@@ -1704,7 +1833,7 @@ index 6ae63e75758..6549f3cbd07 100644
     }
     mtx_unlock(&virgl_screen_mutex);
  
-@@ -1343,8 +1460,9 @@ equal_fd(const void *key1, const void *key2)
+@@ -1343,8 +1471,9 @@ equal_fd(const void *key1, const void *key2)
     return false;
  }
  
@@ -1715,7 +1844,7 @@ index 6ae63e75758..6549f3cbd07 100644
  {
     struct pipe_screen *pscreen = NULL;
  
-@@ -1355,22 +1473,22 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+@@ -1355,22 +1484,22 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
           goto unlock;
     }
  
@@ -1743,7 +1872,7 @@ index 6ae63e75758..6549f3cbd07 100644
  
           /* Bit of a hack, to avoid circular linkage dependency,
            * ie. pipe driver having to call in to winsys, we
-@@ -1383,5 +1501,9 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+@@ -1383,5 +1512,9 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
  
  unlock:
     mtx_unlock(&virgl_screen_mutex);
@@ -2263,5 +2392,5 @@ index 00000000000..0e8d7bfdf0d
 +
 +#endif
 -- 
-2.29.2.windows.2
+2.38.1.windows.1
 

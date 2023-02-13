@@ -17,14 +17,6 @@
  */
 #pragma once
 
-#pragma pack(1)
-struct virtio_vgpu_config {
-    __u8 num_queues;
-    __u64 memory_size;
-    __u64 capabilities;
-};
-#pragma pack()
-
 // virtio debug
 int bDebugPrint = 0;
 int virtioDebugLevel = 0;

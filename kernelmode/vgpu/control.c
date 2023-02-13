@@ -165,7 +165,7 @@ VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE resource)
 NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
     NTSTATUS status = STATUS_UNSUCCESSFUL;
-    ULONG64* input = NULL, * output = NULL;
+    ULONG64 *input = NULL, *output = NULL;
 
     status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &input, bytesReturn);
     if (!NT_SUCCESS(status))
@@ -193,13 +193,22 @@ NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size
         return STATUS_UNSUCCESSFUL;
     }
 
-    if ((Context->Capabilities & (1LL << ((*input) - 1))))
+    switch (*input)
     {
-        *output = 1;
-    }
-    else
-    {
-        *output = 0;
+    case 0x1000:
+        // get vgpu staging config
+        VirtIOWdfDeviceGet(&Context->VDevice, FIELD_OFFSET(struct virtio_vgpu_config, staging), output, sizeof(UINT8));
+        break;
+    default:
+        if ((Context->Capabilities & (1LL << ((*input) - 1))))
+        {
+            *output = 1;
+        }
+        else
+        {
+            *output = 0;
+        }
+        break;
     }
     VGPU_DEBUG_LOG("param=%lld result=%lld", *input, *output);
 
