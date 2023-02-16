@@ -104,7 +104,11 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             if (virglContext)
             {
                 struct virtio_gpu_resource_create_3d* create = (struct virtio_gpu_resource_create_3d*)buffer->pBuf;
-                SetResourceState(virglContext, &((ULONG32)create->resource_id), sizeof(ULONG32), FALSE);
+                PVIRGL_RESOURCE resource = GetResourceFromList(virglContext, create->resource_id);
+                if (resource && resource->bForFence)
+                {
+                    SetResourceState(virglContext, &((ULONG32)create->resource_id), sizeof(ULONG32), FALSE);
+                }
             }
             FreeCommandBuffer(Context, buffer);
             break;

@@ -382,12 +382,6 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
     // initialize pMdl to null in case double free in map/close resource
     resource->Buf.Share.pMdl = NULL;
 
-    GetIdFromIdrWithoutCache(VIRGL_RESOURCE_ID_TYPE, &resource->Id, sizeof(ULONG32));
-    GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &fenceId, sizeof(ULONG64));
-
-    // init state event to false means the resource is busy now
-    KeInitializeEvent(&resource->StateEvent, NotificationEvent, FALSE);
-
     create.format = pCreateResource->format;
     create.width = pCreateResource->width;
     create.height = pCreateResource->height;
@@ -411,6 +405,22 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
         resource->bForBuffer = pCreateResource->size != 1;
         resource->bForFence = FALSE;
     }
+
+    if (resource->bForFence)
+    {
+        // init state event to false means the resource is busy now
+        KeInitializeEvent(&resource->StateEvent, NotificationEvent, FALSE);
+        GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &fenceId, sizeof(ULONG64));
+    }
+    else
+    {
+        // init state event to true means the resource is idle now
+        KeInitializeEvent(&resource->StateEvent, NotificationEvent, TRUE);
+        fenceId = 0;
+    }
+
+    // get global unique id
+    GetIdFromIdrWithoutCache(VIRGL_RESOURCE_ID_TYPE, &resource->Id, sizeof(ULONG32));
 
     // treat all kind of resources as 3d resoures, they would be handled in virglrenderer
     Create3DResource(virglContext->DeviceContext, virglContext->Id, resource->Id, &create, fenceId);
