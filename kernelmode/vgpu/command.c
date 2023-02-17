@@ -129,9 +129,9 @@ VOID GetCapsInfo(PDEVICE_CONTEXT Context)
         KeWaitForSingleObject(&buffer->Event, Executive, KernelMode, FALSE, NULL);
         ASSERT(resp->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET_INFO);
 
-        Capsets.Buf[i].id = resp->capset_id;
-        Capsets.Buf[i].max_size = resp->capset_max_size;
-        Capsets.Buf[i].max_version = resp->capset_max_version;
+        Capsets.Data[i].id = resp->capset_id;
+        Capsets.Data[i].max_size = resp->capset_max_size;
+        Capsets.Data[i].max_version = resp->capset_max_version;
         FreeCommandBuffer(Context, buffer);
     }
 
@@ -142,14 +142,14 @@ VOID GetCaps(PDEVICE_CONTEXT Context, INT32 CapsIndex, UINT32 CapsVer, PVOID pCa
 {
     struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
     UINT32 outNum, inNum;
-    size_t resp_size = sizeof(struct virtio_gpu_resp_capset) + Capsets.Buf[CapsIndex].max_size;
+    size_t resp_size = sizeof(struct virtio_gpu_resp_capset) + Capsets.Data[CapsIndex].max_size;
 
     PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_get_capset), resp_size, TRUE, NULL);
     struct virtio_gpu_get_capset* cmd = buffer->pBuf;
     struct virtio_gpu_resp_capset* resp = buffer->pRespBuf;
 
     cmd->hdr.type = VIRTIO_GPU_CMD_GET_CAPSET;
-    cmd->capset_id = Capsets.Buf[CapsIndex].id;
+    cmd->capset_id = Capsets.Data[CapsIndex].id;
     cmd->capset_version = CapsVer;
 
     outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
@@ -160,7 +160,7 @@ VOID GetCaps(PDEVICE_CONTEXT Context, INT32 CapsIndex, UINT32 CapsVer, PVOID pCa
     KeWaitForSingleObject(&buffer->Event, Executive, KernelMode, FALSE, NULL);
     ASSERT(resp->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET);
 
-    RtlCopyMemory(pCaps, resp->capset_data, Capsets.Buf[CapsIndex].max_size);
+    RtlCopyMemory(pCaps, resp->capset_data, Capsets.Data[CapsIndex].max_size);
     FreeCommandBuffer(Context, buffer);
 }
 
@@ -333,8 +333,8 @@ VOID AttachResourceBacking(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIR
     cmd->resource_id = Resource->Id;
 
     // resource use contiguous physical memory from vgpu memory
-    cmd->gpa = Resource->Buf.PhyicalAddress.QuadPart;
-    cmd->size = (ULONG32)Resource->Buf.Size;
+    cmd->gpa = Resource->Buffer.VgpuMempry.PhysicalAddress.QuadPart;
+    cmd->size = (ULONG32)Resource->Buffer.Size;
 
     outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
 

@@ -104,11 +104,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             if (virglContext)
             {
                 struct virtio_gpu_resource_create_3d* create = (struct virtio_gpu_resource_create_3d*)buffer->pBuf;
-                PVIRGL_RESOURCE resource = GetResourceFromList(virglContext, create->resource_id);
-                if (resource && resource->bForFence)
-                {
-                    SetResourceState(virglContext, &((ULONG32)create->resource_id), sizeof(ULONG32), FALSE);
-                }
+                SetResourceState(virglContext, &((ULONG32)create->resource_id), sizeof(ULONG32), FALSE, header->fence_id);
             }
             FreeCommandBuffer(Context, buffer);
             break;
@@ -120,7 +116,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
                 if (virglContext)
                 {
-                    SetResourceState(virglContext, buffer->Extend, buffer->ExtendSize, FALSE);
+                    SetResourceState(virglContext, buffer->Extend, buffer->ExtendSize, FALSE, header->fence_id);
                 }
                 ExFreePoolWithTag(buffer->Extend, VIRTIO_VGPU_MEMORY_TAG);
             }
@@ -130,7 +126,6 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             {
                 FreeVgpuMemory(buffer->pDataBuf);
             }
-
             FreeCommandBuffer(Context, buffer);
             break;
         }
@@ -431,7 +426,7 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
     // initialize Capsets
     Capsets.NumCaps = 2;
     Capsets.Initialized = FALSE;
-    Capsets.Buf = ExAllocatePool2(POOL_FLAG_NON_PAGED, Capsets.NumCaps * sizeof(VIRTIO_GPU_DRV_CAPSET), VIRTIO_VGPU_MEMORY_TAG);
+    Capsets.Data = ExAllocatePool2(POOL_FLAG_NON_PAGED, Capsets.NumCaps * sizeof(VIRTIO_GPU_DRV_CAPSET), VIRTIO_VGPU_MEMORY_TAG);
     ASSERT(Capsets.Buf != NULL);
 
     PsSetCreateProcessNotifyRoutine(ProcessNotify, FALSE);
@@ -492,10 +487,10 @@ NTSTATUS VirtioVgpuDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
         context->VirtQueueLocks = NULL;
     }
 
-    if (Capsets.Buf)
+    if (Capsets.Data)
     {
-        ExFreePoolWithTag(Capsets.Buf, VIRTIO_VGPU_MEMORY_TAG);
-        Capsets.Buf = NULL;
+        ExFreePoolWithTag(Capsets.Data, VIRTIO_VGPU_MEMORY_TAG);
+        Capsets.Data = NULL;
     }
 
     if (context->VgpuMemoryAddress)

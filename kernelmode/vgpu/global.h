@@ -35,6 +35,11 @@ struct virtio_vgpu_config {
 };
 #pragma pack()
 
+typedef struct _VGPU_MEMORY_DESCRIPTOR {
+    PVOID               VirtualAddress;
+    PHYSICAL_ADDRESS    PhysicalAddress;
+}VGPU_MEMORY_DESCRIPTOR, * PVGPU_MEMORY_DESCRIPTOR;
+
 typedef struct _VIRTIO_GPU_DRV_CAPSET {
     ULONG32 id;
     ULONG32 max_version;
@@ -56,30 +61,29 @@ typedef struct _DEVICE_CONTEXT {
 typedef struct _CAPSETS {
     UINT32					NumCaps;
     BOOLEAN					Initialized;
-    PVIRTIO_GPU_DRV_CAPSET	Buf;
+    PVIRTIO_GPU_DRV_CAPSET	Data;
 }CAPSETS, * PCAPSETS;
 
-typedef struct _SHARE_MEMORY {
+typedef struct _SHARE_DESCRIPTOR {
     PMDL                pMdl;
     SIZE_T              Size;
     PVOID               UserAdderss;
     PVOID               KennelAddress;
-}SHARE_MEMORY, * PSHARE_MEMORY;
+}SHARE_DESCRIPTOR, * PSHARE_DESCRIPTOR;
 
-typedef struct _VIRGL_RESOURCE_BUF {
-    SIZE_T				Size;
-    PVOID				VirtualAddress;
-    PHYSICAL_ADDRESS	PhyicalAddress;
-    SHARE_MEMORY        Share;
-}VIRGL_RESOURCE_BUF, * PVIRGL_RESOURCE_BUF;
+typedef struct _VIRGL_RESOURCE_BUFFER {
+    SIZE_T				    Size;
+    SHARE_DESCRIPTOR        Share;
+    VGPU_MEMORY_DESCRIPTOR  VgpuMempry;
+}VIRGL_RESOURCE_BUFFER, * PVIRGL_RESOURCE_BUFFER;
 
 typedef struct _VIRGL_RESOURCE {
-    ULONG32				Id;
-    KEVENT              StateEvent;
-    VIRGL_RESOURCE_BUF  Buf;
-    LIST_ENTRY			Entry;
-    BOOLEAN             bForBuffer;
-    BOOLEAN             bForFence;
+    ULONG32				    Id;
+    KEVENT                  StateEvent;
+    LIST_ENTRY			    Entry;
+    BOOLEAN                 bForBuffer;
+    ULONG64                 FenceId;
+    VIRGL_RESOURCE_BUFFER   Buffer;
 }VIRGL_RESOURCE, * PVIRGL_RESOURCE;
 
 typedef struct _VIRGL_CONTEXT {
@@ -99,11 +103,6 @@ typedef struct _VGPU_BUFFER {
     PVOID           Extend;
     SIZE_T          ExtendSize;
 }VGPU_BUFFER, * PVGPU_BUFFER;
-
-typedef struct _VGPU_MEMORY_DESCRIPTOR {
-    PVOID               VirtualAddress;
-    PHYSICAL_ADDRESS    PhysicalAddress;
-}VGPU_MEMORY_DESCRIPTOR, * PVGPU_MEMORY_DESCRIPTOR;
 
 // gloval variables
 CAPSETS     Capsets;

@@ -22,7 +22,7 @@
 
 PVIRGL_CONTEXT GetVirglContextFromList(ULONG32 VirglContextId);
 PVIRGL_RESOURCE GetResourceFromList(PVIRGL_CONTEXT virglContext, ULONG32 Id);
-VOID SetResourceState(PVIRGL_CONTEXT virglContext, ULONG32* Ids, SIZE_T IdsSize, BOOLEAN Busy);
+VOID SetResourceState(PVIRGL_CONTEXT virglContext, ULONG32* Ids, SIZE_T IdsSize, BOOLEAN Busy, ULONG64 FenceId);
 
 NTSTATUS CtlCreateVirglContext(IN PDEVICE_CONTEXT Context, IN ULONG32 virglContextId);
 NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext);
