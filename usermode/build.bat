@@ -15,11 +15,10 @@
 
 @git clone https://gitlab.freedesktop.org/mesa/mesa.git
 @cd mesa
-@git reset --hard eba566c85405b0ae9418b93d1f3a392086a7694f
+@git reset --hard 2c40215ab9d20890efb88e7b3e26ca909d7fd74b
 @git apply ..\mesa-virgl-icd-for-windows.patch
-@meson setup build -Dbuildtype=release -Dgallium-drivers=virgl -Dgallium-windows-dll-name=TenclassVGPUx64 -Dprefix=%1
-@cd build
-@meson install
+@meson setup build -Dbuildtype=release -Dgallium-drivers=virgl -Dgallium-windows-dll-name=TenclassVGPUx64 -Dllvm=disabled -Dzlib=disabled -Dprefix=%1
+@meson install -C build
 @echo build finished.
 
 :end

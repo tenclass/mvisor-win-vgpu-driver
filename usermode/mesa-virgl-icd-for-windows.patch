@@ -1,32 +1,36 @@
-From 89a744af8815beaaff88dfc71d52254529f7e9dc Mon Sep 17 00:00:00 2001
+From ad83393db835a9493f6f3b8481bb7ba50c7267b7 Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Tue, 14 Feb 2023 11:00:52 +0800
+Date: Sun, 19 Feb 2023 20:06:12 +0800
 Subject: [PATCH] mesa virgl icd for windows
 
 ---
- include/drm-uapi/drm.h                        |   4 +
+ include/drm-uapi/drm.h                        |   6 +-
  include/drm-uapi/virtgpu_drm.h                |   9 +
  include/linuz/ioccom.h                        |  91 ++
  include/linuz/xf86drm.h                       | 899 ++++++++++++++++++
- src/c11/threads.h                             |   2 +
  src/gallium/drivers/virgl/meson.build         |   2 +-
- src/gallium/drivers/virgl/virgl_context.c     |   2 +
- src/gallium/drivers/virgl/virgl_resource.c    |  33 +-
- src/gallium/drivers/virgl/virgl_screen.c      |   7 +-
- src/gallium/drivers/virgl/virgl_video.c       |   2 +-
- src/gallium/drivers/virgl/virgl_winsys.h      |  10 +-
+ src/gallium/drivers/virgl/virgl_context.c     |   6 +-
+ src/gallium/drivers/virgl/virgl_resource.c    |  52 +-
+ src/gallium/drivers/virgl/virgl_resource.h    |   7 +
+ src/gallium/drivers/virgl/virgl_screen.c      |  14 +-
+ src/gallium/drivers/virgl/virgl_screen.h      |   3 +
+ src/gallium/drivers/virgl/virgl_texture.c     |   4 +-
+ .../drivers/virgl/virgl_transfer_queue.c      |   2 +-
+ src/gallium/drivers/virgl/virgl_video.c       |   6 +-
+ src/gallium/drivers/virgl/virgl_winsys.h      |   8 +-
  src/gallium/meson.build                       |   2 +-
  src/gallium/targets/wgl/meson.build           |   2 +-
- src/gallium/targets/wgl/wgl.c                 |  43 +-
+ src/gallium/targets/wgl/wgl.c                 |  42 +-
  src/gallium/winsys/virgl/drm/meson.build      |   2 +-
  .../winsys/virgl/drm/virgl_drm_public.h       |   2 +-
- .../winsys/virgl/drm/virgl_drm_winsys.c       | 197 +++-
- .../winsys/virgl/drm/virgl_drm_winsys.h       |   4 +-
+ .../winsys/virgl/drm/virgl_drm_winsys.c       | 190 +++-
+ .../winsys/virgl/drm/virgl_drm_winsys.h       |  17 +-
  src/gallium/winsys/virgl/lib/ioctl.h          |  82 ++
  src/gallium/winsys/virgl/lib/meson.build      |  34 +
  src/gallium/winsys/virgl/lib/vgpu_api.c       | 300 ++++++
  src/gallium/winsys/virgl/lib/vgpu_api.h       |  47 +
- 22 files changed, 1727 insertions(+), 49 deletions(-)
+ src/util/u_atomic.h                           |  12 +-
+ 26 files changed, 1765 insertions(+), 76 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -35,7 +39,7 @@ Subject: [PATCH] mesa virgl icd for windows
  create mode 100644 src/gallium/winsys/virgl/lib/vgpu_api.h
 
 diff --git a/include/drm-uapi/drm.h b/include/drm-uapi/drm.h
-index c76325fc3cb..7bbd41ba9e8 100644
+index c76325fc3cb..2745d1838ab 100644
 --- a/include/drm-uapi/drm.h
 +++ b/include/drm-uapi/drm.h
 @@ -44,7 +44,11 @@ typedef unsigned int drm_handle_t;
@@ -50,6 +54,15 @@ index c76325fc3cb..7bbd41ba9e8 100644
  #include <sys/types.h>
  typedef int8_t   __s8;
  typedef uint8_t  __u8;
+@@ -121,7 +125,7 @@ struct drm_tex_region {
+  * other data stored in the same cache line.
+  */
+ struct drm_hw_lock {
+-	__volatile__ unsigned int lock;		/**< lock variable */
++	volatile unsigned int lock;		/**< lock variable */
+ 	char padding[60];			/**< Pad to cache line */
+ };
+ 
 diff --git a/include/drm-uapi/virtgpu_drm.h b/include/drm-uapi/virtgpu_drm.h
 index 0512fde5e69..d3b709fba7c 100644
 --- a/include/drm-uapi/virtgpu_drm.h
@@ -1072,19 +1085,6 @@ index 00000000000..be8a0bad908
 +#endif
 +
 +#endif
-diff --git a/src/c11/threads.h b/src/c11/threads.h
-index 59baea11281..598948bf1cc 100644
---- a/src/c11/threads.h
-+++ b/src/c11/threads.h
-@@ -121,6 +121,8 @@ typedef struct
- {
-    volatile uintptr_t status;
- } once_flag;
-+// FIXME: temporary non-standard hack to ease transition
-+#  define _MTX_INITIALIZER_NP {(void*)-1, -1, 0, 0, 0, 0}
- #  define ONCE_FLAG_INIT {0}
- #  define TSS_DTOR_ITERATIONS 1
- #elif defined(HAVE_PTHREAD)
 diff --git a/src/gallium/drivers/virgl/meson.build b/src/gallium/drivers/virgl/meson.build
 index 0bb26c67c7c..22b8f905f32 100644
 --- a/src/gallium/drivers/virgl/meson.build
@@ -1099,7 +1099,7 @@ index 0bb26c67c7c..22b8f905f32 100644
  
  if with_tests
 diff --git a/src/gallium/drivers/virgl/virgl_context.c b/src/gallium/drivers/virgl/virgl_context.c
-index 40d1155bea7..41eb0dde9ae 100644
+index 40d1155bea7..5a5f668f1c1 100644
 --- a/src/gallium/drivers/virgl/virgl_context.c
 +++ b/src/gallium/drivers/virgl/virgl_context.c
 @@ -21,7 +21,9 @@
@@ -1112,11 +1112,37 @@ index 40d1155bea7..41eb0dde9ae 100644
  #include "pipe/p_shader_tokens.h"
  
  #include "compiler/nir/nir.h"
+@@ -958,7 +960,7 @@ static void virgl_draw_vbo(struct pipe_context *ctx,
+ 
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_screen *rs = virgl_screen(ctx->screen);
+-   struct virgl_indexbuf ib = {};
++   struct virgl_indexbuf ib = {0};
+    struct pipe_draw_info info = *dinfo;
+ 
+    if (!indirect &&
+@@ -1435,7 +1437,7 @@ static void *virgl_create_compute_state(struct pipe_context *ctx,
+    uint32_t handle;
+    const struct tgsi_token *ntt_tokens = NULL;
+    const struct tgsi_token *tokens;
+-   struct pipe_stream_output_info so_info = {};
++   struct pipe_stream_output_info so_info = {0};
+    int ret;
+ 
+    if (state->ir_type == PIPE_SHADER_IR_NIR) {
 diff --git a/src/gallium/drivers/virgl/virgl_resource.c b/src/gallium/drivers/virgl/virgl_resource.c
-index 43f92af6923..7fd6af54baa 100644
+index 43f92af6923..f51e1130c1c 100644
 --- a/src/gallium/drivers/virgl/virgl_resource.c
 +++ b/src/gallium/drivers/virgl/virgl_resource.c
-@@ -36,6 +36,9 @@
+@@ -29,6 +29,7 @@
+ #include "virgl_screen.h"
+ #include "virgl_staging_mgr.h"
+ #include "virgl_encode.h" // for declaration of virgl_encode_copy_transfer
++#include "frontend/sw_winsys.h"
+ 
+ /* A (soft) limit for the amount of memory we want to allow for queued staging
+  * resources. This is used to decide when we should force a flush, in order to
+@@ -36,6 +37,9 @@
   */
  #define VIRGL_QUEUED_STAGING_RES_SIZE_LIMIT (128 * 1024 * 1024)
  
@@ -1126,7 +1152,7 @@ index 43f92af6923..7fd6af54baa 100644
  enum virgl_transfer_map_type {
     VIRGL_TRANSFER_MAP_ERROR = -1,
     VIRGL_TRANSFER_MAP_HW_RES,
-@@ -198,6 +201,11 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
+@@ -198,6 +202,11 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
        wait = false;
     }
  
@@ -1138,7 +1164,7 @@ index 43f92af6923..7fd6af54baa 100644
     /* When the resource is busy but its content can be discarded, we can
      * replace its HW resource or use a staging buffer to avoid waiting.
      */
-@@ -220,7 +228,7 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
+@@ -220,7 +229,7 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
        /* discard implies no readback */
        assert(!readback);
  
@@ -1147,7 +1173,7 @@ index 43f92af6923..7fd6af54baa 100644
           /* Both map types have some costs.  Do them only when the resource is
            * (or will be) busy for real.  Otherwise, set wait to false.
            */
-@@ -248,6 +256,12 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
+@@ -248,6 +257,12 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
        /* If we are performing readback for textures and renderer supports
         * copy_transfer_from_host, then we can return here with proper map.
         */
@@ -1160,7 +1186,25 @@ index 43f92af6923..7fd6af54baa 100644
        if (res->use_staging) {
           if (xfer->base.usage & PIPE_MAP_READ)
              return VIRGL_TRANSFER_MAP_READ_FROM_STAGING;
-@@ -657,10 +671,19 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
+@@ -381,7 +396,7 @@ virgl_staging_map(struct virgl_context *vctx,
+       /* Update source offset and address to point to the requested x coordinate
+        * if we have an align_offset (see above for more information). */
+       vtransfer->copy_src_offset += align_offset;
+-      map_addr += align_offset;
++      (uint8_t*)map_addr += align_offset;
+ 
+       /* Mark as dirty, since we are updating the host side resource
+        * without going through the corresponding guest side resource, and
+@@ -524,7 +539,7 @@ virgl_resource_transfer_map(struct pipe_context *ctx,
+    case VIRGL_TRANSFER_MAP_HW_RES:
+       trans->hw_res_map = vws->resource_map(vws, vres->hw_res);
+       if (trans->hw_res_map)
+-         map_addr = trans->hw_res_map + trans->offset;
++         map_addr = (uint8_t*)trans->hw_res_map + trans->offset;
+       else
+          map_addr = NULL;
+       break;
+@@ -657,10 +672,19 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
        vbind |= VIRGL_BIND_PREFER_EMULATED_BGRA;
     }
  
@@ -1184,11 +1228,71 @@ index 43f92af6923..7fd6af54baa 100644
  
     if (res->use_staging)
        alloc_size = 1;
+@@ -683,6 +707,20 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
+       return NULL;
+    }
+ 
++   if (templ->target == PIPE_TEXTURE_2D && 
++      (templ->bind & PIPE_BIND_DISPLAY_TARGET)) {
++      res->dt = vs->sws->displaytarget_create(vs->sws,
++                                       templ->bind,
++                                       templ->format,
++                                       templ->width0, 
++                                       templ->height0,
++                                       64,
++                                       map_front_private,
++                                       &res->dt_stride);
++
++      assert(res->dt != NULL);
++   }
++
+    res->clean_mask = (1 << VR_MAX_TEXTURE_2D_LEVELS) - 1;
+ 
+    if (templ->target == PIPE_BUFFER) {
+diff --git a/src/gallium/drivers/virgl/virgl_resource.h b/src/gallium/drivers/virgl/virgl_resource.h
+index 3b348e67c3f..f92a2e42dad 100644
+--- a/src/gallium/drivers/virgl/virgl_resource.h
++++ b/src/gallium/drivers/virgl/virgl_resource.h
+@@ -55,6 +55,13 @@ struct virgl_resource {
+    struct virgl_hw_res *hw_res;
+    struct virgl_resource_metadata metadata;
+ 
++   /**
++    * Display target, only valid for PIPE_TEXTURE_2D with the
++    * PIPE_BIND_DISPLAY_TARGET usage.
++    */
++   struct sw_displaytarget *dt;
++   uint32_t dt_stride;
++
+    /* For PIPE_BUFFER only.  Data outside of this range are uninitialized. */
+    struct util_range valid_buffer_range;
+ 
 diff --git a/src/gallium/drivers/virgl/virgl_screen.c b/src/gallium/drivers/virgl/virgl_screen.c
-index a63b7cb690a..598eea065b2 100644
+index a63b7cb690a..5be6d1b92c0 100644
 --- a/src/gallium/drivers/virgl/virgl_screen.c
 +++ b/src/gallium/drivers/virgl/virgl_screen.c
-@@ -901,12 +901,11 @@ static void virgl_flush_frontbuffer(struct pipe_screen *screen,
+@@ -35,6 +35,7 @@
+ #include "vl/vl_decoder.h"
+ #include "vl/vl_video_buffer.h"
+ 
++#include "frontend/sw_winsys.h"
+ #include "tgsi/tgsi_exec.h"
+ 
+ #include "virgl_screen.h"
+@@ -789,6 +790,12 @@ virgl_is_format_supported( struct pipe_screen *screen,
+          return false;
+    }
+ 
++   if (target == PIPE_TEXTURE_2D && 
++      (bind & PIPE_BIND_DISPLAY_TARGET)) {
++      if(!vscreen->sws->is_displaytarget_format_supported(vscreen->sws, bind, format))
++         return false;
++   }
++
+    if (bind & PIPE_BIND_VERTEX_BUFFER) {
+       return virgl_is_vertex_format_supported(screen, format);
+    }
+@@ -901,12 +908,11 @@ static void virgl_flush_frontbuffer(struct pipe_screen *screen,
  {
     struct virgl_screen *vscreen = virgl_screen(screen);
     struct virgl_winsys *vws = vscreen->vws;
@@ -1202,7 +1306,7 @@ index a63b7cb690a..598eea065b2 100644
                               sub_box);
     }
  }
-@@ -1022,6 +1021,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
+@@ -1022,6 +1028,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
     return screen->disk_cache;
  }
  
@@ -1210,7 +1314,7 @@ index a63b7cb690a..598eea065b2 100644
  static void virgl_disk_cache_create(struct virgl_screen *screen)
  {
     const struct build_id_note *note =
-@@ -1050,6 +1050,7 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
+@@ -1050,6 +1057,7 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
  
     screen->disk_cache = disk_cache_create("virgl", timestamp, 0);
  }
@@ -1218,7 +1322,7 @@ index a63b7cb690a..598eea065b2 100644
  
  static bool
  virgl_is_dmabuf_modifier_supported(UNUSED struct pipe_screen *pscreen,
-@@ -1186,6 +1187,8 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
+@@ -1186,6 +1194,8 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
  
     slab_create_parent(&screen->transfer_pool, sizeof(struct virgl_transfer), 16);
  
@@ -1227,11 +1331,77 @@ index a63b7cb690a..598eea065b2 100644
 +#endif
     return &screen->base;
  }
+diff --git a/src/gallium/drivers/virgl/virgl_screen.h b/src/gallium/drivers/virgl/virgl_screen.h
+index ce8a531092a..7dbb8fb6a1e 100644
+--- a/src/gallium/drivers/virgl/virgl_screen.h
++++ b/src/gallium/drivers/virgl/virgl_screen.h
+@@ -30,6 +30,7 @@
+ #include "compiler/nir/nir.h"
+ #include "virtio-gpu/virgl_protocol.h"
+ 
++
+ enum virgl_debug_flags {
+    VIRGL_DEBUG_VERBOSE              = 1 << 0,
+    VIRGL_DEBUG_TGSI                 = 1 << 1,
+@@ -55,6 +56,8 @@ struct virgl_screen {
+ 
+    struct virgl_winsys *vws;
+ 
++   struct sw_winsys *sws;
++
+    struct virgl_drm_caps caps;
+ 
+    struct slab_parent_pool transfer_pool;
+diff --git a/src/gallium/drivers/virgl/virgl_texture.c b/src/gallium/drivers/virgl/virgl_texture.c
+index 0f8a7f570d8..f6ed1996b6b 100644
+--- a/src/gallium/drivers/virgl/virgl_texture.c
++++ b/src/gallium/drivers/virgl/virgl_texture.c
+@@ -186,7 +186,7 @@ static void *texture_transfer_map_resolve(struct pipe_context *ctx,
+             goto fail;
+ 
+          if (!util_format_translate_3d(resource->format,
+-                                       ptr + vtex->metadata.level_offset[level],
++                                       (uint8_t*)ptr + vtex->metadata.level_offset[level],
+                                        trans->base.stride,
+                                        trans->base.layer_stride,
+                                        box->x, box->y, box->z,
+@@ -208,7 +208,7 @@ static void *texture_transfer_map_resolve(struct pipe_context *ctx,
+       if ((usage & PIPE_MAP_WRITE) == 0)
+          pipe_resource_reference(&trans->resolve_transfer->resource, NULL);
+ 
+-      return ptr + trans->offset;
++      return (uint8_t*)ptr + trans->offset;
+    }
+ 
+ fail:
+diff --git a/src/gallium/drivers/virgl/virgl_transfer_queue.c b/src/gallium/drivers/virgl/virgl_transfer_queue.c
+index 2353ad5042e..e5a65c6e888 100644
+--- a/src/gallium/drivers/virgl/virgl_transfer_queue.c
++++ b/src/gallium/drivers/virgl/virgl_transfer_queue.c
+@@ -372,7 +372,7 @@ virgl_transfer_queue_extend_buffer(struct virgl_transfer_queue *queue,
+    assert(queued->base.resource->target == PIPE_BUFFER);
+    assert(queued->hw_res_map);
+ 
+-   memcpy(queued->hw_res_map + offset, data, size);
++   memcpy((uint8_t*)queued->hw_res_map + offset, data, size);
+    u_box_union_2d(&queued->base.box, &queued->base.box, &box);
+    queued->offset = queued->base.box.x;
+ 
 diff --git a/src/gallium/drivers/virgl/virgl_video.c b/src/gallium/drivers/virgl/virgl_video.c
-index f5aa89db141..e3e68eeb0aa 100644
+index f5aa89db141..92b244ec310 100644
 --- a/src/gallium/drivers/virgl/virgl_video.c
 +++ b/src/gallium/drivers/virgl/virgl_video.c
-@@ -106,7 +106,7 @@ static int fill_base_picture_desc(const struct pipe_picture_desc *desc,
+@@ -66,7 +66,9 @@
+  */
+ 
+ #include <string.h>
++#ifndef _WIN32
+ #include <sys/param.h>
++#endif
+ 
+ #include "vl/vl_decoder.h"
+ #include "vl/vl_video_buffer.h"
+@@ -106,7 +108,7 @@ static int fill_base_picture_desc(const struct pipe_picture_desc *desc,
      ITEM_SET(vbase, desc, protected_playback);
      ITEM_SET(vbase, desc, key_size);
      memcpy(vbase->decrypt_key, desc->decrypt_key,
@@ -1240,20 +1410,20 @@ index f5aa89db141..e3e68eeb0aa 100644
  
      return 0;
  }
+@@ -652,7 +654,7 @@ static void virgl_video_decode_bitstream(struct pipe_video_codec *codec,
+     if (!ptr)
+         return;
+     for (i = 0, vcdc->bs_size = 0; i < num_buffers; i++) {
+-        memcpy(ptr + vcdc->bs_size, buffers[i], sizes[i]);
++        memcpy((uint8_t*)ptr + vcdc->bs_size, buffers[i], sizes[i]);
+         vcdc->bs_size += sizes[i];
+     }
+     pipe_buffer_unmap(&vctx->base, xfer);
 diff --git a/src/gallium/drivers/virgl/virgl_winsys.h b/src/gallium/drivers/virgl/virgl_winsys.h
-index 13e82b033b4..adebe0d3c68 100644
+index 13e82b033b4..a63bf3c294d 100644
 --- a/src/gallium/drivers/virgl/virgl_winsys.h
 +++ b/src/gallium/drivers/virgl/virgl_winsys.h
-@@ -45,6 +45,8 @@ struct virgl_cmd_buf {
- };
- 
- struct virgl_winsys {
-+   struct sw_winsys *winsys;
-+
-    unsigned pci_id;
-    int supports_fences; /* In/Out fences are supported */
-    int supports_encoded_transfers; /* Encoded transfers are supported */
-@@ -52,6 +54,8 @@ struct virgl_winsys {
+@@ -52,6 +52,8 @@ struct virgl_winsys {
  
     void (*destroy)(struct virgl_winsys *vws);
  
@@ -1262,7 +1432,7 @@ index 13e82b033b4..adebe0d3c68 100644
     int (*transfer_put)(struct virgl_winsys *vws,
                         struct virgl_hw_res *res,
                         const struct pipe_box *box,
-@@ -130,11 +134,13 @@ struct virgl_winsys {
+@@ -130,11 +132,13 @@ struct virgl_winsys {
                             struct pipe_fence_handle *src);
  
     /* for sw paths */
@@ -1279,7 +1449,7 @@ index 13e82b033b4..adebe0d3c68 100644
                               struct virgl_cmd_buf *cbuf,
                               struct pipe_fence_handle *fence);
 diff --git a/src/gallium/meson.build b/src/gallium/meson.build
-index 148c7220382..d307c71a138 100644
+index 7b77da14f30..4f571a944a1 100644
 --- a/src/gallium/meson.build
 +++ b/src/gallium/meson.build
 @@ -152,9 +152,9 @@ else
@@ -1307,18 +1477,10 @@ index eaca0aec86b..433d24ed395 100644
    ],
    link_args : gallium_wgl_link_args,
 diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
-index da44e146488..5f174e47a7d 100644
+index da44e146488..fc3a810ad26 100644
 --- a/src/gallium/targets/wgl/wgl.c
 +++ b/src/gallium/targets/wgl/wgl.c
-@@ -35,6 +35,7 @@
- 
- 
- #include <windows.h>
-+#include <bcrypt.h>
- 
- #include "util/u_debug.h"
- #include "stw_winsys.h"
-@@ -43,6 +44,10 @@
+@@ -43,6 +43,10 @@
  #include "pipe/p_screen.h"
  #include "pipe/p_context.h"
  
@@ -1329,7 +1491,7 @@ index da44e146488..5f174e47a7d 100644
  #ifdef GALLIUM_SOFTPIPE
  #include "softpipe/sp_texture.h"
  #include "softpipe/sp_screen.h"
-@@ -63,6 +68,10 @@
+@@ -63,6 +67,10 @@
  #include "zink/zink_public.h"
  #endif
  
@@ -1340,7 +1502,7 @@ index da44e146488..5f174e47a7d 100644
  #ifdef GALLIUM_LLVMPIPE
  static boolean use_llvmpipe = FALSE;
  #endif
-@@ -72,7 +81,11 @@ static boolean use_d3d12 = FALSE;
+@@ -72,7 +80,11 @@ static boolean use_d3d12 = FALSE;
  #ifdef GALLIUM_ZINK
  static boolean use_zink = FALSE;
  #endif
@@ -1352,7 +1514,7 @@ index da44e146488..5f174e47a7d 100644
  static const char *created_driver_name = NULL;
  
  static struct pipe_screen *
-@@ -106,7 +119,17 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+@@ -106,7 +118,17 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
        screen = softpipe_create_screen(winsys);
     }
  #endif
@@ -1371,7 +1533,7 @@ index da44e146488..5f174e47a7d 100644
     return screen;
  }
  
-@@ -128,6 +151,9 @@ wgl_screen_create(HDC hDC)
+@@ -128,6 +150,9 @@ wgl_screen_create(HDC hDC)
  #ifdef GALLIUM_ZINK
        sw_only ? "" : "zink",
  #endif
@@ -1381,7 +1543,7 @@ index da44e146488..5f174e47a7d 100644
  #if defined(GALLIUM_LLVMPIPE)
        "llvmpipe",
  #endif
-@@ -203,6 +229,13 @@ wgl_present(struct pipe_screen *screen,
+@@ -203,6 +228,13 @@ wgl_present(struct pipe_screen *screen,
     dt = softpipe_resource(res)->dt,
     gdi_sw_display(winsys, dt, hDC);
  #endif
@@ -1395,7 +1557,7 @@ index da44e146488..5f174e47a7d 100644
  }
  
  
-@@ -277,6 +310,7 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+@@ -277,6 +309,7 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
  {
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
@@ -1403,7 +1565,7 @@ index da44e146488..5f174e47a7d 100644
        stw_init(&stw_winsys);
        stw_init_thread();
        break;
-@@ -290,6 +324,13 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+@@ -290,6 +323,13 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
        break;
  
     case DLL_PROCESS_DETACH:
@@ -1442,17 +1604,16 @@ index 32df3945ff4..c3a4fd4f49d 100644
  
  #endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-index 6ae63e75758..6a2e662e51c 100644
+index 6ae63e75758..e235b6ff3ba 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-@@ -25,10 +25,18 @@
+@@ -25,10 +25,17 @@
  #include <fcntl.h>
  #include <limits.h>
  #include <stdio.h>
 +
 +#if _WIN32
 +#include <windows.h>
-+#include <bcrypt.h>
 +#else
  #include <sys/ioctl.h>
  #include <sys/stat.h>
@@ -1465,7 +1626,7 @@ index 6ae63e75758..6a2e662e51c 100644
  #include "util/os_file.h"
  #include "util/os_time.h"
  #include "util/u_memory.h"
-@@ -36,18 +44,24 @@
+@@ -36,18 +43,24 @@
  #include "util/u_hash_table.h"
  #include "util/u_inlines.h"
  #include "util/u_pointer.h"
@@ -1492,7 +1653,7 @@ index 6ae63e75758..6a2e662e51c 100644
  // Delete local definitions when virglrenderer_hw.h becomes public
  #define VIRGL_DRM_CAPSET_VIRGL  1
  #define VIRGL_DRM_CAPSET_VIRGL2 2
-@@ -93,8 +107,14 @@ static void virgl_hw_res_destroy(struct virgl_drm_winsys *qdws,
+@@ -93,8 +106,14 @@ static void virgl_hw_res_destroy(struct virgl_drm_winsys *qdws,
           _mesa_hash_table_remove_key(qdws->bo_names,
                                  (void *)(uintptr_t)res->flink_name);
        mtx_unlock(&qdws->bo_handles_mutex);
@@ -1508,7 +1669,7 @@ index 6ae63e75758..6a2e662e51c 100644
  
        memset(&args, 0, sizeof(args));
        args.handle = res->bo_handle;
-@@ -117,8 +137,14 @@ static boolean virgl_drm_resource_is_busy(struct virgl_winsys *vws,
+@@ -117,8 +136,14 @@ static boolean virgl_drm_resource_is_busy(struct virgl_winsys *vws,
     waitcmd.flags = VIRTGPU_WAIT_NOWAIT;
  
     ret = drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_WAIT, &waitcmd);
@@ -1523,12 +1684,12 @@ index 6ae63e75758..6a2e662e51c 100644
  
     p_atomic_set(&res->maybe_busy, false);
  
-@@ -200,8 +226,15 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
+@@ -200,8 +225,15 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
     /* Make sure blob is page aligned. */
     if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
                  VIRGL_RESOURCE_FLAG_MAP_COHERENT)) {
 +#ifdef _WIN32
-+      uint64_t page_size;
++      uint64_t page_size = 0;
 +      assert(os_get_page_size(&page_size) == true);
 +      width = ALIGN(width, page_size);
 +      size = ALIGN(size, page_size);
@@ -1539,7 +1700,7 @@ index 6ae63e75758..6a2e662e51c 100644
     }
  
     blob_id = p_atomic_inc_return(&qdws->blob_id);
-@@ -218,7 +251,7 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
+@@ -218,7 +250,7 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
     cmd[VIRGL_PIPE_RES_CREATE_FLAGS] = flags;
     cmd[VIRGL_PIPE_RES_CREATE_BLOB_ID] = blob_id;
  
@@ -1548,7 +1709,7 @@ index 6ae63e75758..6a2e662e51c 100644
     drm_rc_blob.cmd_size = 4 * (VIRGL_PIPE_RES_CREATE_SIZE + 1);
     drm_rc_blob.size = size;
     drm_rc_blob.blob_mem = VIRTGPU_BLOB_MEM_HOST3D;
-@@ -475,6 +508,13 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
+@@ -475,6 +507,13 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
                                          uint64_t *modifier,
                                          uint32_t *blob_mem)
  {
@@ -1562,7 +1723,7 @@ index 6ae63e75758..6a2e662e51c 100644
     struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
     struct drm_gem_open open_arg = {};
     struct drm_virtgpu_resource_info info_arg = {};
-@@ -573,6 +613,8 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
+@@ -573,6 +612,8 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
  done:
     mtx_unlock(&qdws->bo_handles_mutex);
     return res;
@@ -1571,7 +1732,7 @@ index 6ae63e75758..6a2e662e51c 100644
  }
  
  static void
-@@ -632,6 +674,13 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
+@@ -632,6 +673,13 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
                                                      uint32_t stride,
                                                      struct winsys_handle *whandle)
   {
@@ -1585,7 +1746,7 @@ index 6ae63e75758..6a2e662e51c 100644
     struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
     struct drm_gem_flink flink;
  
-@@ -667,6 +716,8 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
+@@ -667,6 +715,8 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
  
     whandle->stride = stride;
     return TRUE;
@@ -1594,7 +1755,7 @@ index 6ae63e75758..6a2e662e51c 100644
  }
  
  static void *virgl_drm_resource_map(struct virgl_winsys *qws,
-@@ -684,10 +735,14 @@ static void *virgl_drm_resource_map(struct virgl_winsys *qws,
+@@ -684,10 +734,14 @@ static void *virgl_drm_resource_map(struct virgl_winsys *qws,
     if (drmIoctl(qdws->fd, DRM_IOCTL_VIRTGPU_MAP, &mmap_arg))
        return NULL;
  
@@ -1609,7 +1770,7 @@ index 6ae63e75758..6a2e662e51c 100644
  
     res->ptr = ptr;
     return ptr;
-@@ -953,10 +1008,10 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
+@@ -953,10 +1007,10 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
        return 0;
  
     memset(&eb, 0, sizeof(struct drm_virtgpu_execbuffer));
@@ -1622,7 +1783,7 @@ index 6ae63e75758..6a2e662e51c 100644
  
     eb.fence_fd = -1;
     if (qws->supports_fences) {
-@@ -1012,7 +1067,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
+@@ -1012,7 +1066,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        args.cap_set_id = 1;
        args.size = sizeof(struct virgl_caps_v1);
     }
@@ -1631,7 +1792,7 @@ index 6ae63e75758..6a2e662e51c 100644
  
     ret = drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
     if (ret == -1 && errno == EINVAL) {
-@@ -1023,6 +1078,8 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
+@@ -1023,6 +1077,8 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        if (ret == -1)
            return ret;
     }
@@ -1640,7 +1801,7 @@ index 6ae63e75758..6a2e662e51c 100644
     return ret;
  }
  
-@@ -1041,6 +1098,9 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+@@ -1041,6 +1097,9 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
  {
     struct virgl_drm_fence *fence = virgl_drm_fence(_fence);
  
@@ -1650,7 +1811,7 @@ index 6ae63e75758..6a2e662e51c 100644
     if (vws->supports_fences) {
        uint64_t timeout_ms;
        int timeout_poll;
-@@ -1057,6 +1117,7 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+@@ -1057,6 +1116,7 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
  
        return sync_wait(fence->fd, timeout_poll) == 0;
     }
@@ -1658,7 +1819,7 @@ index 6ae63e75758..6a2e662e51c 100644
  
     if (timeout == 0)
        return !virgl_drm_resource_is_busy(vws, fence->hw_res);
-@@ -1109,7 +1170,13 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
+@@ -1109,7 +1169,13 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
     if (!fence->external)
        return;
  
@@ -1672,7 +1833,7 @@ index 6ae63e75758..6a2e662e51c 100644
  }
  
  static int virgl_fence_get_fd(struct virgl_winsys *vws,
-@@ -1123,7 +1190,7 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
+@@ -1123,7 +1189,7 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
     return os_dupfd_cloexec(fence->fd);
  }
  
@@ -1681,7 +1842,7 @@ index 6ae63e75758..6a2e662e51c 100644
  {
  	int ret;
  	drmVersionPtr version;
-@@ -1162,7 +1229,7 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
+@@ -1162,7 +1228,7 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
     virgl_hw_res_destroy(qdws, res);
  }
  
@@ -1690,7 +1851,7 @@ index 6ae63e75758..6a2e662e51c 100644
  {
     int ret;
     struct drm_virtgpu_context_init init = { 0 };
-@@ -1186,7 +1253,7 @@ static int virgl_init_context(int drmFD)
+@@ -1186,7 +1252,7 @@ static int virgl_init_context(int drmFD)
                           VIRGL_DRM_CAPSET_VIRGL2 :
                           VIRGL_DRM_CAPSET_VIRGL;
  
@@ -1699,7 +1860,7 @@ index 6ae63e75758..6a2e662e51c 100644
     init.num_params = 1;
  
     ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
-@@ -1203,21 +1270,85 @@ static int virgl_init_context(int drmFD)
+@@ -1203,21 +1269,68 @@ static int virgl_init_context(int drmFD)
     return 0;
  }
  
@@ -1712,42 +1873,25 @@ index 6ae63e75758..6a2e662e51c 100644
 +   struct virgl_screen *vscreen = virgl_screen(screen);
 +   struct virgl_resource *vres = virgl_resource(res);
 +
-+   unsigned int stride;
-+   if (!vres->hw_res->dt) {
-+      struct sw_winsys *winsys = vscreen->vws->winsys;
-+      vres->hw_res->dt = winsys->displaytarget_create(winsys,
-+                                             res->bind,
-+                                             res->format,
-+                                             res->width0, res->height0,
-+                                             64,
-+                                             NULL,
-+                                             &stride);
-+   } else {
-+      stride = align(res->width0 * util_format_get_blocksize(res->format), 64);
++   assert(vres->dt && vres->b.target == PIPE_TEXTURE_2D);
++   void *dt_map = vscreen->sws->displaytarget_map(vscreen->sws, vres->dt, 0);
++
++   if (dt_map) {
++      struct pipe_transfer *transfer = NULL;
++      void *res_map = pipe_texture_map(ctx, res, level, layer, PIPE_MAP_READ, 0, 0, res->width0, res->height0, &transfer);
++      if (res_map && transfer) {
++         // copy the 2d display resource to pipe screen
++         util_copy_rect((ubyte*)dt_map, res->format, vres->dt_stride, 0, 0,
++                        transfer->box.width, transfer->box.height,
++                        (const ubyte*)res_map, transfer->stride, 0, 0);
++
++         pipe_texture_unmap(ctx, transfer);
++         vscreen->sws->displaytarget_unmap(vscreen->sws, vres->dt);
++      }
 +   }
-+   assert(vres->hw_res->dt && vres->b.target == PIPE_TEXTURE_2D);
-+
-+   void *screen_map = vscreen->vws->winsys->displaytarget_map(vscreen->vws->winsys, vres->hw_res->dt, 0);
-+   assert(screen_map);
-+
-+   if (vres->hw_res->maybe_busy) {
-+      virgl_drm_resource_wait(vscreen->vws, vres->hw_res);
-+   }
-+
-+   struct pipe_transfer *transfer;
-+   void *res_map = pipe_texture_map(ctx, res, level, layer, PIPE_MAP_READ, 0, 0, res->width0, res->height0, &transfer);
-+   assert(res_map && transfer);
-+
-+   // copy the 2d display resource to pipe screen
-+   util_copy_rect((ubyte*)screen_map, res->format, stride, 0, 0,
-+                  transfer->box.width, transfer->box.height,
-+                  (const ubyte*)res_map, transfer->stride, 0, 0);
-+
-+   pipe_texture_unmap(ctx, transfer);
-+   vscreen->vws->winsys->displaytarget_unmap(vscreen->vws->winsys, vres->hw_res->dt);
 +
 +   // display
-+   vscreen->vws->winsys->displaytarget_display(vscreen->vws->winsys, vres->hw_res->dt, winsys_drawable_handle, sub_box);
++   vscreen->sws->displaytarget_display(vscreen->sws, vres->dt, winsys_drawable_handle, sub_box);
 +   return;
 +}
 +
@@ -1792,7 +1936,7 @@ index 6ae63e75758..6a2e662e51c 100644
     }
  
     if (!params[param_3d_features].value)
-@@ -1233,11 +1364,6 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1233,11 +1346,6 @@ virgl_drm_winsys_create(int drmFD)
           return NULL;
     }
  
@@ -1804,7 +1948,7 @@ index 6ae63e75758..6a2e662e51c 100644
     virgl_resource_cache_init(&qdws->cache, CACHE_TIMEOUT_USEC,
                               virgl_drm_resource_cache_entry_is_busy,
                               virgl_drm_resource_cache_entry_release,
-@@ -1250,6 +1376,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1250,6 +1358,7 @@ virgl_drm_winsys_create(int drmFD)
     qdws->bo_names = util_hash_table_create_ptr_keys();
     qdws->base.destroy = virgl_drm_winsys_destroy;
  
@@ -1812,7 +1956,7 @@ index 6ae63e75758..6a2e662e51c 100644
     qdws->base.transfer_put = virgl_bo_transfer_put;
     qdws->base.transfer_get = virgl_bo_transfer_get;
     qdws->base.resource_create = virgl_drm_winsys_resource_cache_create;
-@@ -1266,6 +1393,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1266,6 +1375,7 @@ virgl_drm_winsys_create(int drmFD)
     qdws->base.submit_cmd = virgl_drm_winsys_submit_cmd;
     qdws->base.emit_res = virgl_drm_emit_res;
     qdws->base.res_is_referenced = virgl_drm_res_is_ref;
@@ -1820,8 +1964,21 @@ index 6ae63e75758..6a2e662e51c 100644
  
     qdws->base.cs_create_fence = virgl_cs_create_fence;
     qdws->base.fence_wait = virgl_fence_wait;
-@@ -1294,9 +1422,9 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
-    mtx_lock(&virgl_screen_mutex);
+@@ -1283,7 +1393,7 @@ virgl_drm_winsys_create(int drmFD)
+ }
+ 
+ static struct hash_table *fd_tab = NULL;
+-static mtx_t virgl_screen_mutex = _MTX_INITIALIZER_NP;
++static simple_mtx_t virgl_screen_mutex = SIMPLE_MTX_INITIALIZER;
+ 
+ static void
+ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+@@ -1291,14 +1401,14 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+    struct virgl_screen *screen = virgl_screen(pscreen);
+    boolean destroy;
+ 
+-   mtx_lock(&virgl_screen_mutex);
++   simple_mtx_lock(&virgl_screen_mutex);
     destroy = --screen->refcnt == 0;
     if (destroy) {
 -      int fd = virgl_drm_winsys(screen->vws)->fd;
@@ -1831,20 +1988,25 @@ index 6ae63e75758..6a2e662e51c 100644
 +      _mesa_hash_table_remove_key(fd_tab, fd);
 +      CloseHandle(fd);
     }
-    mtx_unlock(&virgl_screen_mutex);
+-   mtx_unlock(&virgl_screen_mutex);
++   simple_mtx_unlock(&virgl_screen_mutex);
  
-@@ -1343,8 +1471,9 @@ equal_fd(const void *key1, const void *key2)
-    return false;
+    if (destroy) {
+       pscreen->destroy = screen->winsys_priv;
+@@ -1344,33 +1454,32 @@ equal_fd(const void *key1, const void *key2)
  }
  
-+/* pipe_screen is needed for create pipe_context */
  struct pipe_screen *
 -virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
 +virgl_drm_screen_create(HANDLE fd, const struct pipe_screen_config *config, struct sw_winsys *winsys)
  {
     struct pipe_screen *pscreen = NULL;
  
-@@ -1355,22 +1484,22 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+-   mtx_lock(&virgl_screen_mutex);
++   simple_mtx_lock(&virgl_screen_mutex);
+    if (!fd_tab) {
+       fd_tab = _mesa_hash_table_create(NULL, hash_fd, equal_fd);
+       if (!fd_tab)
           goto unlock;
     }
  
@@ -1863,7 +2025,6 @@ index 6ae63e75758..6a2e662e51c 100644
 +         CloseHandle(fd);
           goto unlock;
        }
-+      vws->winsys = winsys;
  
        pscreen = virgl_create_screen(vws, config);
        if (pscreen) {
@@ -1872,10 +2033,19 @@ index 6ae63e75758..6a2e662e51c 100644
  
           /* Bit of a hack, to avoid circular linkage dependency,
            * ie. pipe driver having to call in to winsys, we
-@@ -1383,5 +1512,9 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+@@ -1378,10 +1487,17 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+           */
+          virgl_screen(pscreen)->winsys_priv = pscreen->destroy;
+          pscreen->destroy = virgl_drm_screen_destroy;
++
++         // get sw_winsys
++         virgl_screen(pscreen)->sws = winsys;
+       }
+    }
  
  unlock:
-    mtx_unlock(&virgl_screen_mutex);
+-   mtx_unlock(&virgl_screen_mutex);
++   simple_mtx_unlock(&virgl_screen_mutex);
 +   if (!pscreen) {
 +      _debug_printf("virgl_drm_screen_create failed err=%d\n", GetLastError());
 +   }
@@ -1883,19 +2053,30 @@ index 6ae63e75758..6a2e662e51c 100644
     return pscreen;
  }
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
-index f17d89c098b..f256666b6ee 100644
+index f17d89c098b..02596bf3184 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
-@@ -43,6 +43,8 @@ struct virgl_hw_res {
-    uint32_t size;
-    void *ptr;
+@@ -79,19 +79,20 @@ enum param_id {
  
-+   struct sw_displaytarget *dt;
-+
-    struct virgl_resource_cache_entry cache_entry;
-    uint32_t bind;
-    uint32_t flags;
-@@ -91,7 +93,7 @@ struct param params[] = { PARAM(VIRTGPU_PARAM_3D_FEATURES),
+ #define PARAM(x) (struct param) { x, #x, 0 }
+ 
+-struct param params[] = { PARAM(VIRTGPU_PARAM_3D_FEATURES),
+-                          PARAM(VIRTGPU_PARAM_CAPSET_QUERY_FIX),
+-                          PARAM(VIRTGPU_PARAM_RESOURCE_BLOB),
+-                          PARAM(VIRTGPU_PARAM_HOST_VISIBLE),
+-                          PARAM(VIRTGPU_PARAM_CROSS_DEVICE),
+-                          PARAM(VIRTGPU_PARAM_CONTEXT_INIT),
+-                          PARAM(VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs)
++struct param params[7] = { 
++   {1, "VIRTGPU_PARAM_3D_FEATURES", 0},
++   {2, "VIRTGPU_PARAM_CAPSET_QUERY_FIX", 0},
++   {3, "VIRTGPU_PARAM_RESOURCE_BLOB", 0},
++   {4, "VIRTGPU_PARAM_HOST_VISIBLE", 0},
++   {5, "VIRTGPU_PARAM_CROSS_DEVICE", 0},
++   {6, "VIRTGPU_PARAM_CONTEXT_INIT", 0},
++   {7, "VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs", 0}
+ };
+ 
  struct virgl_drm_winsys
  {
     struct virgl_winsys base;
@@ -2391,6 +2572,56 @@ index 00000000000..0e8d7bfdf0d
 +void DestroyVirglContext(HANDLE handle);
 +
 +#endif
+diff --git a/src/util/u_atomic.h b/src/util/u_atomic.h
+index ec4569d24f7..a265b72c5bb 100644
+--- a/src/util/u_atomic.h
++++ b/src/util/u_atomic.h
+@@ -149,7 +149,7 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+    sizeof *(_v) == sizeof(char)    ? p_atomic_add_return((_v), 1) : \
+    sizeof *(_v) == sizeof(short)   ? _InterlockedIncrement16((short *)  (_v)) : \
+    sizeof *(_v) == sizeof(long)    ? _InterlockedIncrement  ((long *)   (_v)) : \
+-   sizeof *(_v) == sizeof(__int64) ? _interlockedincrement64((__int64 *)(_v)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedIncrement64((__int64 *)(_v)) : \
+                                      (assert(!"should not get here"), 0))
+ 
+ #define p_atomic_dec(_v) \
+@@ -159,7 +159,7 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+    sizeof *(_v) == sizeof(char)    ? p_atomic_add_return((_v), -1) : \
+    sizeof *(_v) == sizeof(short)   ? _InterlockedDecrement16((short *)  (_v)) : \
+    sizeof *(_v) == sizeof(long)    ? _InterlockedDecrement  ((long *)   (_v)) : \
+-   sizeof *(_v) == sizeof(__int64) ? _interlockeddecrement64((__int64 *)(_v)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedDecrement64((__int64 *)(_v)) : \
+                                      (assert(!"should not get here"), 0))
+ 
+ #define p_atomic_add(_v, _i) \
+@@ -168,15 +168,15 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+ #define p_atomic_add_return(_v, _i) (\
+    sizeof *(_v) == sizeof(char)    ? _interlockedadd8 ((char *)   (_v), (_i)) : \
+    sizeof *(_v) == sizeof(short)   ? _interlockedadd16((short *)  (_v), (_i)) : \
+-   sizeof *(_v) == sizeof(long)    ? _interlockedadd  ((long *)   (_v), (_i)) : \
+-   sizeof *(_v) == sizeof(__int64) ? _interlockedadd64((__int64 *)(_v), (_i)) : \
++   sizeof *(_v) == sizeof(long)    ? _InterlockedExchangeAdd  ((long *)   (_v), (_i)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchangeAdd64((__int64 *)(_v), (_i)) : \
+                                      (assert(!"should not get here"), 0))
+ 
+ #define p_atomic_fetch_add(_v, _i) (\
+    sizeof *(_v) == sizeof(char)    ? _InterlockedExchangeAdd8 ((char *)   (_v), (_i)) : \
+    sizeof *(_v) == sizeof(short)   ? _InterlockedExchangeAdd16((short *)  (_v), (_i)) : \
+    sizeof *(_v) == sizeof(long)    ? _InterlockedExchangeAdd  ((long *)   (_v), (_i)) : \
+-   sizeof *(_v) == sizeof(__int64) ? _interlockedexchangeadd64((__int64 *)(_v), (_i)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchangeAdd64((__int64 *)(_v), (_i)) : \
+                                      (assert(!"should not get here"), 0))
+ 
+ #define p_atomic_cmpxchg(_v, _old, _new) (\
+@@ -197,7 +197,7 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+    sizeof *(_v) == sizeof(char)    ? _InterlockedExchange8 ((char *)   (_v), (char)   (_new)) : \
+    sizeof *(_v) == sizeof(short)   ? _InterlockedExchange16((short *)  (_v), (short)  (_new)) : \
+    sizeof *(_v) == sizeof(long)    ? _InterlockedExchange  ((long *)   (_v), (long)   (_new)) : \
+-   sizeof *(_v) == sizeof(__int64) ? _interlockedexchange64((__int64 *)(_v), (__int64)(_new)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchange64((__int64 *)(_v), (__int64)(_new)) : \
+                                      (assert(!"should not get here"), 0))
+ 
+ #endif
 -- 
-2.38.1.windows.1
+2.29.2.windows.2
 
