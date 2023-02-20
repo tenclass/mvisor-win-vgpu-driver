@@ -74,7 +74,7 @@ typedef struct _SHARE_DESCRIPTOR {
 typedef struct _VIRGL_RESOURCE_BUFFER {
     SIZE_T				    Size;
     SHARE_DESCRIPTOR        Share;
-    VGPU_MEMORY_DESCRIPTOR  VgpuMempry;
+    VGPU_MEMORY_DESCRIPTOR  VgpuMemory;
 }VIRGL_RESOURCE_BUFFER, * PVIRGL_RESOURCE_BUFFER;
 
 typedef struct _VIRGL_RESOURCE {
@@ -102,6 +102,7 @@ typedef struct _VGPU_BUFFER {
     WDFREQUEST      Request;
     PVOID           Extend;
     SIZE_T          ExtendSize;
+    PVOID           FenceObject;
 }VGPU_BUFFER, * PVGPU_BUFFER;
 
 // gloval variables

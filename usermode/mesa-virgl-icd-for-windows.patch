@@ -1,18 +1,18 @@
-From ad83393db835a9493f6f3b8481bb7ba50c7267b7 Mon Sep 17 00:00:00 2001
+From 8e432d6c3beffe3256f3fcf76ef8312fb55a3638 Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Sun, 19 Feb 2023 20:06:12 +0800
+Date: Mon, 20 Feb 2023 20:38:46 +0800
 Subject: [PATCH] mesa virgl icd for windows
 
 ---
  include/drm-uapi/drm.h                        |   6 +-
- include/drm-uapi/virtgpu_drm.h                |   9 +
+ include/drm-uapi/virtgpu_drm.h                |  19 +
  include/linuz/ioccom.h                        |  91 ++
  include/linuz/xf86drm.h                       | 899 ++++++++++++++++++
  src/gallium/drivers/virgl/meson.build         |   2 +-
- src/gallium/drivers/virgl/virgl_context.c     |   6 +-
+ src/gallium/drivers/virgl/virgl_context.c     |  13 +-
  src/gallium/drivers/virgl/virgl_resource.c    |  52 +-
  src/gallium/drivers/virgl/virgl_resource.h    |   7 +
- src/gallium/drivers/virgl/virgl_screen.c      |  14 +-
+ src/gallium/drivers/virgl/virgl_screen.c      |  30 +-
  src/gallium/drivers/virgl/virgl_screen.h      |   3 +
  src/gallium/drivers/virgl/virgl_texture.c     |   4 +-
  .../drivers/virgl/virgl_transfer_queue.c      |   2 +-
@@ -23,14 +23,14 @@ Subject: [PATCH] mesa virgl icd for windows
  src/gallium/targets/wgl/wgl.c                 |  42 +-
  src/gallium/winsys/virgl/drm/meson.build      |   2 +-
  .../winsys/virgl/drm/virgl_drm_public.h       |   2 +-
- .../winsys/virgl/drm/virgl_drm_winsys.c       | 190 +++-
- .../winsys/virgl/drm/virgl_drm_winsys.h       |  17 +-
+ .../winsys/virgl/drm/virgl_drm_winsys.c       | 262 ++++-
+ .../winsys/virgl/drm/virgl_drm_winsys.h       |  27 +-
  src/gallium/winsys/virgl/lib/ioctl.h          |  82 ++
  src/gallium/winsys/virgl/lib/meson.build      |  34 +
  src/gallium/winsys/virgl/lib/vgpu_api.c       | 300 ++++++
  src/gallium/winsys/virgl/lib/vgpu_api.h       |  47 +
  src/util/u_atomic.h                           |  12 +-
- 26 files changed, 1765 insertions(+), 76 deletions(-)
+ 26 files changed, 1876 insertions(+), 80 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -64,10 +64,25 @@ index c76325fc3cb..2745d1838ab 100644
  };
  
 diff --git a/include/drm-uapi/virtgpu_drm.h b/include/drm-uapi/virtgpu_drm.h
-index 0512fde5e69..d3b709fba7c 100644
+index 0512fde5e69..2be6422e905 100644
 --- a/include/drm-uapi/virtgpu_drm.h
 +++ b/include/drm-uapi/virtgpu_drm.h
-@@ -123,6 +123,15 @@ struct drm_virtgpu_3d_box {
+@@ -70,7 +70,14 @@ struct drm_virtgpu_execbuffer {
+ 	__u64 command; /* void* */
+ 	__u64 bo_handles;
+ 	__u32 num_bo_handles;
++
++#ifdef _WIN32
++	HANDLE in_fence_fd;
++	HANDLE out_fence_fd;
++#else
+ 	__s32 fence_fd; /* in/out fence fd (see VIRTGPU_EXECBUF_FENCE_FD_IN/OUT) */
++#endif
++
+ 	__u32 ring_idx; /* command ring index (see VIRTGPU_EXECBUF_RING_IDX) */
+ 	__u32 pad;
+ };
+@@ -123,6 +130,16 @@ struct drm_virtgpu_3d_box {
  	__u32 d;
  };
  
@@ -78,11 +93,28 @@ index 0512fde5e69..d3b709fba7c 100644
 +    __u32 offset;
 +    __u32 stride;
 +    __u32 layer_stride;
++	__u32 pad;
 +};
 +
  struct drm_virtgpu_3d_transfer_to_host {
  	__u32 bo_handle;
  	struct drm_virtgpu_3d_box box;
+@@ -130,6 +147,7 @@ struct drm_virtgpu_3d_transfer_to_host {
+ 	__u32 offset;
+ 	__u32 stride;
+ 	__u32 layer_stride;
++	__u32 pad;
+ };
+ 
+ struct drm_virtgpu_3d_transfer_from_host {
+@@ -139,6 +157,7 @@ struct drm_virtgpu_3d_transfer_from_host {
+ 	__u32 offset;
+ 	__u32 stride;
+ 	__u32 layer_stride;
++	__u32 pad;
+ };
+ 
+ #define VIRTGPU_WAIT_NOWAIT 1 /* like it */
 diff --git a/include/linuz/ioccom.h b/include/linuz/ioccom.h
 new file mode 100644
 index 00000000000..00e87d9aa3a
@@ -1099,7 +1131,7 @@ index 0bb26c67c7c..22b8f905f32 100644
  
  if with_tests
 diff --git a/src/gallium/drivers/virgl/virgl_context.c b/src/gallium/drivers/virgl/virgl_context.c
-index 40d1155bea7..5a5f668f1c1 100644
+index 40d1155bea7..e50cb681479 100644
 --- a/src/gallium/drivers/virgl/virgl_context.c
 +++ b/src/gallium/drivers/virgl/virgl_context.c
 @@ -21,7 +21,9 @@
@@ -1121,7 +1153,22 @@ index 40d1155bea7..5a5f668f1c1 100644
     struct pipe_draw_info info = *dinfo;
  
     if (!indirect &&
-@@ -1435,7 +1437,7 @@ static void *virgl_create_compute_state(struct pipe_context *ctx,
+@@ -1363,8 +1365,13 @@ static void virgl_create_fence_fd(struct pipe_context *ctx,
+    assert(type == PIPE_FD_TYPE_NATIVE_SYNC);
+    struct virgl_screen *rs = virgl_screen(ctx->screen);
+ 
+-   if (rs->vws->cs_create_fence)
++   if (rs->vws->cs_create_fence) {
++#ifdef _WIN32
++      _debug_printf("virgl_create_fence_fd not support on windows\n");
++#else
+       *fence = rs->vws->cs_create_fence(rs->vws, fd);
++#endif
++   }
+ }
+ 
+ static void virgl_fence_server_sync(struct pipe_context *ctx,
+@@ -1435,7 +1442,7 @@ static void *virgl_create_compute_state(struct pipe_context *ctx,
     uint32_t handle;
     const struct tgsi_token *ntt_tokens = NULL;
     const struct tgsi_token *tokens;
@@ -1268,7 +1315,7 @@ index 3b348e67c3f..f92a2e42dad 100644
     struct util_range valid_buffer_range;
  
 diff --git a/src/gallium/drivers/virgl/virgl_screen.c b/src/gallium/drivers/virgl/virgl_screen.c
-index a63b7cb690a..5be6d1b92c0 100644
+index a63b7cb690a..2b276376f51 100644
 --- a/src/gallium/drivers/virgl/virgl_screen.c
 +++ b/src/gallium/drivers/virgl/virgl_screen.c
 @@ -35,6 +35,7 @@
@@ -1279,7 +1326,17 @@ index a63b7cb690a..5be6d1b92c0 100644
  #include "tgsi/tgsi_exec.h"
  
  #include "virgl_screen.h"
-@@ -789,6 +790,12 @@ virgl_is_format_supported( struct pipe_screen *screen,
+@@ -340,6 +341,9 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
+       return vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_TEXTURE_SHADOW_LOD;
+    case PIPE_CAP_NATIVE_FENCE_FD:
+       return vscreen->vws->supports_fences;
++   case PIPE_CAP_MEMOBJ:
++   case PIPE_CAP_FENCE_SIGNAL:
++      return 1; 
+    case PIPE_CAP_DEST_SURFACE_SRGB_CONTROL:
+       return (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_SRGB_WRITE_CONTROL) ||
+             (vscreen->caps.caps.v2.host_feature_check_version < 1);
+@@ -789,6 +793,12 @@ virgl_is_format_supported( struct pipe_screen *screen,
           return false;
     }
  
@@ -1292,7 +1349,7 @@ index a63b7cb690a..5be6d1b92c0 100644
     if (bind & PIPE_BIND_VERTEX_BUFFER) {
        return virgl_is_vertex_format_supported(screen, format);
     }
-@@ -901,12 +908,11 @@ static void virgl_flush_frontbuffer(struct pipe_screen *screen,
+@@ -901,12 +911,11 @@ static void virgl_flush_frontbuffer(struct pipe_screen *screen,
  {
     struct virgl_screen *vscreen = virgl_screen(screen);
     struct virgl_winsys *vws = vscreen->vws;
@@ -1306,7 +1363,7 @@ index a63b7cb690a..5be6d1b92c0 100644
                               sub_box);
     }
  }
-@@ -1022,6 +1028,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
+@@ -1022,6 +1031,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
     return screen->disk_cache;
  }
  
@@ -1314,7 +1371,7 @@ index a63b7cb690a..5be6d1b92c0 100644
  static void virgl_disk_cache_create(struct virgl_screen *screen)
  {
     const struct build_id_note *note =
-@@ -1050,6 +1057,7 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
+@@ -1050,6 +1060,7 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
  
     screen->disk_cache = disk_cache_create("virgl", timestamp, 0);
  }
@@ -1322,7 +1379,34 @@ index a63b7cb690a..5be6d1b92c0 100644
  
  static bool
  virgl_is_dmabuf_modifier_supported(UNUSED struct pipe_screen *pscreen,
-@@ -1186,6 +1194,8 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
+@@ -1100,6 +1111,16 @@ virgl_get_compiler_options(struct pipe_screen *pscreen,
+    return &vscreen->compiler_options;
+ }
+ 
++static void virgl_create_fence_win32(struct pipe_screen *screen,
++                              struct pipe_fence_handle **fence,
++                              void *handle,
++                              const void *name,
++                              enum pipe_fd_type type)
++{
++   _debug_printf("virgl_create_fence_win32 not support, handle=%p name=%s type=%d\n", handle, name, type);
++   assert(0);
++}
++
+ struct pipe_screen *
+ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *config)
+ {
+@@ -1149,6 +1170,9 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
+    screen->base.flush_frontbuffer = virgl_flush_frontbuffer;
+    screen->base.get_timestamp = u_default_get_timestamp;
+    screen->base.fence_reference = virgl_fence_reference;
++
++   screen->base.create_fence_win32 = virgl_create_fence_win32;
++
+    //screen->base.fence_signalled = virgl_fence_signalled;
+    screen->base.fence_finish = virgl_fence_finish;
+    screen->base.fence_get_fd = virgl_fence_get_fd;
+@@ -1186,6 +1210,8 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
  
     slab_create_parent(&screen->transfer_pool, sizeof(struct virgl_transfer), 16);
  
@@ -1604,7 +1688,7 @@ index 32df3945ff4..c3a4fd4f49d 100644
  
  #endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-index 6ae63e75758..e235b6ff3ba 100644
+index 6ae63e75758..4cce5899923 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 @@ -25,10 +25,17 @@
@@ -1770,7 +1854,67 @@ index 6ae63e75758..e235b6ff3ba 100644
  
     res->ptr = ptr;
     return ptr;
-@@ -953,10 +1007,10 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
+@@ -871,7 +925,11 @@ static struct virgl_cmd_buf *virgl_drm_cmd_buf_create(struct virgl_winsys *qws,
+       return NULL;
+    }
+ 
++#ifdef _WIN32
++   cbuf->in_fence_fd = NULL;
++#else
+    cbuf->in_fence_fd = -1;
++#endif
+    cbuf->base.buf = cbuf->buf;
+    return &cbuf->base;
+ }
+@@ -887,21 +945,34 @@ static void virgl_drm_cmd_buf_destroy(struct virgl_cmd_buf *_cbuf)
+ }
+ 
+ static struct pipe_fence_handle *
+-virgl_drm_fence_create(struct virgl_winsys *vws, int fd, bool external)
++#ifdef _WIN32
++   virgl_drm_fence_create(struct virgl_winsys *vws, HANDLE fd, bool external)
++#else
++   virgl_drm_fence_create(struct virgl_winsys *vws, int fd, bool external)
++#endif
+ {
+    struct virgl_drm_fence *fence;
+ 
+    assert(vws->supports_fences);
+ 
++   // external fd not implement
++   assert(!external);
++
++#ifndef _WIN32
+    if (external) {
+       fd = os_dupfd_cloexec(fd);
+       if (fd < 0)
+          return NULL;
+    }
++#endif
+ 
+    fence = CALLOC_STRUCT(virgl_drm_fence);
+    if (!fence) {
++#ifdef _WIN32
++      CloseHandle(fd);
++#else
+       close(fd);
++#endif
+       return NULL;
+    }
+ 
+@@ -923,7 +994,11 @@ virgl_drm_fence_create_legacy(struct virgl_winsys *vws)
+    fence = CALLOC_STRUCT(virgl_drm_fence);
+    if (!fence)
+       return NULL;
++#ifdef _WIN32
++   fence->fd = NULL;
++#else
+    fence->fd = -1;
++#endif
+ 
+    /* Resources for fences should not be from the cache, since we are basing
+     * the fence status on the resource creation busy status.
+@@ -953,13 +1028,28 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
        return 0;
  
     memset(&eb, 0, sizeof(struct drm_virtgpu_execbuffer));
@@ -1781,9 +1925,59 @@ index 6ae63e75758..e235b6ff3ba 100644
 -   eb.bo_handles = (unsigned long)(void *)cbuf->res_hlist;
 +   eb.bo_handles = (uint64_t)(void *)cbuf->res_hlist;
  
-    eb.fence_fd = -1;
+-   eb.fence_fd = -1;
++#ifdef _WIN32
     if (qws->supports_fences) {
-@@ -1012,7 +1066,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
++      if (cbuf->in_fence_fd != NULL) {
++         eb.in_fence_fd = cbuf->in_fence_fd;
++         eb.flags |= VIRTGPU_EXECBUF_FENCE_FD_IN;
++      }
++
++      if (fence != NULL) {
++         eb.out_fence_fd = CreateEvent(NULL, TRUE, FALSE, NULL);
++         eb.flags |= VIRTGPU_EXECBUF_FENCE_FD_OUT;
++      }
++   } else {
++      assert(cbuf->in_fence_fd == NULL);
++   }
++#else
++   eb.fence_fd = -1;
++    if (qws->supports_fences) {
+       if (cbuf->in_fence_fd >= 0) {
+          eb.flags |= VIRTGPU_EXECBUF_FENCE_FD_IN;
+          eb.fence_fd = cbuf->in_fence_fd;
+@@ -970,6 +1060,7 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
+    } else {
+       assert(cbuf->in_fence_fd < 0);
+    }
++#endif
+ 
+    ret = drmIoctl(qdws->fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb);
+    if (ret == -1)
+@@ -978,12 +1069,22 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
+ 
+    if (qws->supports_fences) {
+       if (cbuf->in_fence_fd >= 0) {
++#ifdef _WIN32
++         CloseHandle(cbuf->in_fence_fd);
++         cbuf->in_fence_fd = NULL;
++#else
+          close(cbuf->in_fence_fd);
+          cbuf->in_fence_fd = -1;
++#endif
+       }
+ 
+       if (fence != NULL && ret == 0)
++#ifdef _WIN32
++         *fence = virgl_drm_fence_create(qws, eb.out_fence_fd, false);
++#else
+          *fence = virgl_drm_fence_create(qws, eb.fence_fd, false);
++#endif
++
+    } else {
+       if (fence != NULL && ret == 0)
+          *fence = virgl_drm_fence_create_legacy(qws);
+@@ -1012,7 +1113,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        args.cap_set_id = 1;
        args.size = sizeof(struct virgl_caps_v1);
     }
@@ -1792,7 +1986,7 @@ index 6ae63e75758..e235b6ff3ba 100644
  
     ret = drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
     if (ret == -1 && errno == EINVAL) {
-@@ -1023,6 +1077,8 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
+@@ -1023,16 +1124,24 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        if (ret == -1)
            return ret;
     }
@@ -1801,48 +1995,88 @@ index 6ae63e75758..e235b6ff3ba 100644
     return ret;
  }
  
-@@ -1041,6 +1097,9 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+ static struct pipe_fence_handle *
+ virgl_cs_create_fence(struct virgl_winsys *vws, int fd)
  {
-    struct virgl_drm_fence *fence = virgl_drm_fence(_fence);
- 
 +#ifdef _WIN32
-+   assert(!vws->supports_fences);
++   //not implement
++   assert(0);
++   return NULL;
 +#else
-    if (vws->supports_fences) {
-       uint64_t timeout_ms;
-       int timeout_poll;
-@@ -1057,6 +1116,7 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+    if (!vws->supports_fences)
+       return NULL;
  
-       return sync_wait(fence->fd, timeout_poll) == 0;
-    }
+    return virgl_drm_fence_create(vws, fd, true);
++#endif
+ }
+ 
+ static bool virgl_fence_wait(struct virgl_winsys *vws,
+@@ -1046,7 +1155,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+       int timeout_poll;
+ 
+       if (timeout == 0)
++#ifdef _WIN32
++         return WaitForSingleObject(fence->fd, 0) == WAIT_OBJECT_0;
++#else
+          return sync_wait(fence->fd, 0) == 0;
 +#endif
  
+       timeout_ms = timeout / 1000000;
+       /* round up */
+@@ -1055,7 +1168,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+ 
+       timeout_poll = timeout_ms <= INT_MAX ? (int) timeout_ms : -1;
+ 
++#ifdef _WIN32
++      return WaitForSingleObject(fence->fd, timeout_poll) == WAIT_OBJECT_0;
++#else
+       return sync_wait(fence->fd, timeout_poll) == 0;
++#endif
+    }
+ 
     if (timeout == 0)
-       return !virgl_drm_resource_is_busy(vws, fence->hw_res);
-@@ -1109,7 +1169,13 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
+@@ -1085,7 +1202,11 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
+ 
+    if (pipe_reference(&dfence->reference, &sfence->reference)) {
+       if (vws->supports_fences) {
++#ifdef _WIN32
++         CloseHandle(dfence->fd);
++#else
+          close(dfence->fd);
++#endif
+       } else {
+          virgl_drm_resource_reference(vws, &dfence->hw_res, NULL);
+       }
+@@ -1109,11 +1230,15 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
     if (!fence->external)
        return;
  
 +#ifdef _WIN32
-+   UNREFERENCED_PARAMETER(cbuf);
-+   _debug_printf("sync_accumulate not implemented\n");
-+   assert(0);
++   cbuf->in_fence_fd = fence->fd;
 +#else
     sync_accumulate("virgl", &cbuf->in_fence_fd, fence->fd);
 +#endif
  }
  
- static int virgl_fence_get_fd(struct virgl_winsys *vws,
-@@ -1123,7 +1189,7 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
+-static int virgl_fence_get_fd(struct virgl_winsys *vws,
+-                              struct pipe_fence_handle *_fence)
++#ifndef _WIN32
++static int virgl_fence_get_fd(struct virgl_winsys *vws, struct pipe_fence_handle *_fence)
+ {
+    struct virgl_drm_fence *fence = virgl_drm_fence(_fence);
+ 
+@@ -1122,8 +1247,9 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
+ 
     return os_dupfd_cloexec(fence->fd);
  }
++#endif
  
 -static int virgl_drm_get_version(int fd)
 +static int virgl_drm_get_version(HANDLE fd)
  {
  	int ret;
  	drmVersionPtr version;
-@@ -1162,7 +1228,7 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
+@@ -1162,7 +1288,7 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
     virgl_hw_res_destroy(qdws, res);
  }
  
@@ -1851,7 +2085,7 @@ index 6ae63e75758..e235b6ff3ba 100644
  {
     int ret;
     struct drm_virtgpu_context_init init = { 0 };
-@@ -1186,7 +1252,7 @@ static int virgl_init_context(int drmFD)
+@@ -1186,7 +1312,7 @@ static int virgl_init_context(int drmFD)
                           VIRGL_DRM_CAPSET_VIRGL2 :
                           VIRGL_DRM_CAPSET_VIRGL;
  
@@ -1860,7 +2094,7 @@ index 6ae63e75758..e235b6ff3ba 100644
     init.num_params = 1;
  
     ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
-@@ -1203,21 +1269,68 @@ static int virgl_init_context(int drmFD)
+@@ -1203,21 +1329,68 @@ static int virgl_init_context(int drmFD)
     return 0;
  }
  
@@ -1936,7 +2170,7 @@ index 6ae63e75758..e235b6ff3ba 100644
     }
  
     if (!params[param_3d_features].value)
-@@ -1233,11 +1346,6 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1233,11 +1406,6 @@ virgl_drm_winsys_create(int drmFD)
           return NULL;
     }
  
@@ -1948,7 +2182,7 @@ index 6ae63e75758..e235b6ff3ba 100644
     virgl_resource_cache_init(&qdws->cache, CACHE_TIMEOUT_USEC,
                               virgl_drm_resource_cache_entry_is_busy,
                               virgl_drm_resource_cache_entry_release,
-@@ -1250,6 +1358,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1250,6 +1418,7 @@ virgl_drm_winsys_create(int drmFD)
     qdws->bo_names = util_hash_table_create_ptr_keys();
     qdws->base.destroy = virgl_drm_winsys_destroy;
  
@@ -1956,7 +2190,7 @@ index 6ae63e75758..e235b6ff3ba 100644
     qdws->base.transfer_put = virgl_bo_transfer_put;
     qdws->base.transfer_get = virgl_bo_transfer_get;
     qdws->base.resource_create = virgl_drm_winsys_resource_cache_create;
-@@ -1266,6 +1375,7 @@ virgl_drm_winsys_create(int drmFD)
+@@ -1266,12 +1435,17 @@ virgl_drm_winsys_create(int drmFD)
     qdws->base.submit_cmd = virgl_drm_winsys_submit_cmd;
     qdws->base.emit_res = virgl_drm_emit_res;
     qdws->base.res_is_referenced = virgl_drm_res_is_ref;
@@ -1964,7 +2198,17 @@ index 6ae63e75758..e235b6ff3ba 100644
  
     qdws->base.cs_create_fence = virgl_cs_create_fence;
     qdws->base.fence_wait = virgl_fence_wait;
-@@ -1283,7 +1393,7 @@ virgl_drm_winsys_create(int drmFD)
+    qdws->base.fence_reference = virgl_fence_reference;
+    qdws->base.fence_server_sync = virgl_fence_server_sync;
++
++#ifndef _WIN32
+    qdws->base.fence_get_fd = virgl_fence_get_fd;
++#endif
++
+    qdws->base.get_caps = virgl_drm_get_caps;
+    qdws->base.supports_fences =  drm_version >= VIRGL_DRM_VERSION_FENCE_FD;
+    qdws->base.supports_encoded_transfers = 1;
+@@ -1283,7 +1457,7 @@ virgl_drm_winsys_create(int drmFD)
  }
  
  static struct hash_table *fd_tab = NULL;
@@ -1973,7 +2217,7 @@ index 6ae63e75758..e235b6ff3ba 100644
  
  static void
  virgl_drm_screen_destroy(struct pipe_screen *pscreen)
-@@ -1291,14 +1401,14 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+@@ -1291,14 +1465,14 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
     struct virgl_screen *screen = virgl_screen(pscreen);
     boolean destroy;
  
@@ -1993,7 +2237,7 @@ index 6ae63e75758..e235b6ff3ba 100644
  
     if (destroy) {
        pscreen->destroy = screen->winsys_priv;
-@@ -1344,33 +1454,32 @@ equal_fd(const void *key1, const void *key2)
+@@ -1344,33 +1518,32 @@ equal_fd(const void *key1, const void *key2)
  }
  
  struct pipe_screen *
@@ -2033,7 +2277,7 @@ index 6ae63e75758..e235b6ff3ba 100644
  
           /* Bit of a hack, to avoid circular linkage dependency,
            * ie. pipe driver having to call in to winsys, we
-@@ -1378,10 +1487,17 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+@@ -1378,10 +1551,17 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
            */
           virgl_screen(pscreen)->winsys_priv = pscreen->destroy;
           pscreen->destroy = virgl_drm_screen_destroy;
@@ -2053,10 +2297,10 @@ index 6ae63e75758..e235b6ff3ba 100644
     return pscreen;
  }
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
-index f17d89c098b..02596bf3184 100644
+index f17d89c098b..a31577de2af 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
-@@ -79,19 +79,20 @@ enum param_id {
+@@ -79,19 +79,24 @@ enum param_id {
  
  #define PARAM(x) (struct param) { x, #x, 0 }
  
@@ -2080,11 +2324,38 @@ index f17d89c098b..02596bf3184 100644
  struct virgl_drm_winsys
  {
     struct virgl_winsys base;
--   int fd;
++#ifdef _WIN32
 +   HANDLE fd;
++#else
+    int fd;
++#endif
     struct virgl_resource_cache cache;
     mtx_t mutex;
  
+@@ -104,7 +109,11 @@ struct virgl_drm_winsys
+ struct virgl_drm_fence {
+    struct pipe_reference reference;
+    bool external;
++#ifdef _WIN32
++   HANDLE fd;
++#else
+    int fd;
++#endif
+    struct virgl_hw_res *hw_res;
+ };
+ 
+@@ -113,7 +122,11 @@ struct virgl_drm_cmd_buf {
+ 
+    uint32_t *buf;
+ 
++#ifdef _WIN32
++   HANDLE in_fence_fd;
++#else
+    int in_fence_fd;
++#endif
+ 
+    unsigned nres;
+    unsigned cres;
 diff --git a/src/gallium/winsys/virgl/lib/ioctl.h b/src/gallium/winsys/virgl/lib/ioctl.h
 new file mode 100644
 index 00000000000..29938c86bd0
@@ -2215,7 +2486,7 @@ index 00000000000..6576e0616ef
 +)
 diff --git a/src/gallium/winsys/virgl/lib/vgpu_api.c b/src/gallium/winsys/virgl/lib/vgpu_api.c
 new file mode 100644
-index 00000000000..ed5a197ccc7
+index 00000000000..a7ab2e6e9a9
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/vgpu_api.c
 @@ -0,0 +1,300 @@
@@ -2268,7 +2539,7 @@ index 00000000000..ed5a197ccc7
 +    if (version)
 +    {
 +        version->version_major = 0;
-+        version->version_minor = 0;
++        version->version_minor = 1;
 +        return version;
 +    }
 +
@@ -2623,5 +2894,5 @@ index ec4569d24f7..a265b72c5bb 100644
  
  #endif
 -- 
-2.29.2.windows.2
+2.38.1.windows.1
 

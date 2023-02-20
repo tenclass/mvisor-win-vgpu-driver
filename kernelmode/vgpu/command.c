@@ -333,7 +333,7 @@ VOID AttachResourceBacking(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIR
     cmd->resource_id = Resource->Id;
 
     // resource use contiguous physical memory from vgpu memory
-    cmd->gpa = Resource->Buffer.VgpuMempry.PhysicalAddress.QuadPart;
+    cmd->gpa = Resource->Buffer.VgpuMemory.PhysicalAddress.QuadPart;
     cmd->size = (ULONG32)Resource->Buffer.Size;
 
     outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
@@ -408,7 +408,8 @@ VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Reso
     PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }
 
-VOID SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_DESCRIPTOR Command, SIZE_T Size, PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId)
+VOID SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_DESCRIPTOR Command, SIZE_T Size,
+    PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId, PVOID FenceObject)
 {
     UINT32 outNum;
     struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
@@ -417,6 +418,7 @@ VOID SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY
     buffer->Extend = Extend;
     buffer->ExtendSize = ExtendSize;
     buffer->pDataBuf = Command->VirtualAddress;
+    buffer->FenceObject = FenceObject;
 
     struct virtio_gpu_cmd_submit* cmd = buffer->pBuf;
     cmd->hdr.ctx_id = VirglContextId;

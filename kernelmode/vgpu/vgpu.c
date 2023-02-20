@@ -121,6 +121,11 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 ExFreePoolWithTag(buffer->Extend, VIRTIO_VGPU_MEMORY_TAG);
             }
 
+            if (buffer->FenceObject != NULL)
+            {
+                KeSetEvent(buffer->FenceObject, IO_NO_INCREMENT, FALSE);
+            }
+
             // relesase the contiguous cmd data buffer
             if (buffer->pDataBuf != NULL)
             {
@@ -427,7 +432,7 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
     Capsets.NumCaps = 2;
     Capsets.Initialized = FALSE;
     Capsets.Data = ExAllocatePool2(POOL_FLAG_NON_PAGED, Capsets.NumCaps * sizeof(VIRTIO_GPU_DRV_CAPSET), VIRTIO_VGPU_MEMORY_TAG);
-    ASSERT(Capsets.Buf != NULL);
+    ASSERT(Capsets.Data != NULL);
 
     PsSetCreateProcessNotifyRoutine(ProcessNotify, FALSE);
     InitializeListHead(&VirglContextList);

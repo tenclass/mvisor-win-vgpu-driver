@@ -158,7 +158,7 @@ VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE resource)
         {
             DeleteUserShareMemory(&resource->Buffer.Share);
         }
-        FreeVgpuMemory(resource->Buffer.VgpuMempry.VirtualAddress);
+        FreeVgpuMemory(resource->Buffer.VgpuMemory.VirtualAddress);
     }
 
     UnrefResource(VirglContext->DeviceContext, VirglContext->Id, resource->Id);
@@ -390,17 +390,6 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
     create.last_level = pCreateResource->last_level;
     create.nr_samples = pCreateResource->nr_samples;
 
-    if (pCreateResource->target == 0 && pCreateResource->bind == (1 << 17) && pCreateResource->size == 8)
-    {
-        // fence object didn't need buffer
-        resource->bForBuffer = FALSE;
-    }
-    else
-    {
-        // VIRGL_CAP_COPY_TRANSFER set size=1 of resource without buffer
-        resource->bForBuffer = pCreateResource->size != 1;
-    }
-
     GetIdFromIdrWithoutCache(VIRGL_RESOURCE_ID_TYPE, &resource->Id, sizeof(ULONG32));
     GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &resource->FenceId, sizeof(ULONG64));
 
@@ -409,6 +398,9 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
 
     // treat all kind of resources as 3d resoures, they would be handled in virglrenderer
     Create3DResource(virglContext->DeviceContext, virglContext->Id, resource->Id, &create, resource->FenceId);
+
+    // VIRGL_CAP_COPY_TRANSFER set size=1 of resource without buffer
+    resource->bForBuffer = pCreateResource->size != 1;
 
     if (resource->bForBuffer)
     {
@@ -424,11 +416,14 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
             resource->Buffer.Size = ROUND_UP(pCreateResource->size, PAGE_SIZE);
         }
 
-        if (!AllocateVgpuMemory(resource->Buffer.Size, &resource->Buffer.VgpuMempry))
+        if (!AllocateVgpuMemory(resource->Buffer.Size, &resource->Buffer.VgpuMemory))
         {
             VGPU_DEBUG_PRINT("allocate dma memory failed");
             return STATUS_INSUFFICIENT_RESOURCES;
         }
+
+        // clear memory to avoid crash in cinema4d sometime
+        RtlZeroMemory(resource->Buffer.VgpuMemory.VirtualAddress, resource->Buffer.Size);
         AttachResourceBacking(virglContext->DeviceContext, virglContext->Id, resource);
     }
 
@@ -632,7 +627,7 @@ NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t I
     }
     else
     {
-        resource->Buffer.Share.KennelAddress = resource->Buffer.VgpuMempry.VirtualAddress;
+        resource->Buffer.Share.KennelAddress = resource->Buffer.VgpuMemory.VirtualAddress;
         resource->Buffer.Share.Size = resource->Buffer.Size;
         if (CreateUserShareMemory(&resource->Buffer.Share))
         {
@@ -654,6 +649,8 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
     ULONG64                         fenceId;
     WDFMEMORY                       commandBuf;
     WDFMEMORY                       handlesBuf;
+    PVOID                           inFence = NULL;
+    PVOID                           outFence = NULL;
     PVOID                           wdfCommandBuf;
     PVOID                           extend = NULL;
     ULONG32*                        bohandles;
@@ -694,6 +691,35 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
         return STATUS_UNSUCCESSFUL;
+    }
+
+    if (cmd->flags & VIRTGPU_EXECBUF_FENCE_FD_IN)
+    {
+        ASSERT(cmd->in_fence_fd != NULL);
+        status = ObReferenceObjectByHandle(cmd->in_fence_fd, GENERIC_ALL, NULL, KernelMode, &inFence, NULL);
+        if (!NT_SUCCESS(status))
+        {
+            VGPU_DEBUG_LOG("ObReferenceObjectByHandle failed in_fence_fd=%p status=0x%08x", cmd->in_fence_fd, status);
+            return status;
+        }
+
+        status = KeWaitForSingleObject(inFence, Executive, KernelMode, FALSE, 0);
+        if (!NT_SUCCESS(status))
+        {
+            VGPU_DEBUG_LOG("KeWaitForSingleObject failed in_fence_fd=%p status=0x%08x", cmd->in_fence_fd, status);
+            return status;
+        }
+    }
+
+    if (cmd->flags & VIRTGPU_EXECBUF_FENCE_FD_OUT)
+    {
+        ASSERT(cmd->out_fence_fd != NULL);
+        status = ObReferenceObjectByHandle(cmd->out_fence_fd, GENERIC_ALL, NULL, KernelMode, &outFence, NULL);
+        if (!NT_SUCCESS(status))
+        {
+            VGPU_DEBUG_LOG("ObReferenceObjectByHandle failed out_fence_fd=%p status=0x%08x", cmd->out_fence_fd, status);
+            return status;
+        }
     }
 
     // get new fence
@@ -742,7 +768,7 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
 
     // copy user cmd buffer to vgpu memory
     RtlCopyMemory(vgpuMemory.VirtualAddress, wdfCommandBuf, cmd->size);
-    SubmitCommand(virglContext->DeviceContext, virglContext->Id, &vgpuMemory, cmd->size, extend, boHandlesSize, fenceId);
+    SubmitCommand(virglContext->DeviceContext, virglContext->Id, &vgpuMemory, cmd->size, extend, boHandlesSize, fenceId, outFence);
 
     return status;
 }

@@ -87,9 +87,14 @@ DEFINE_GUID(GUID_DEVINTERFACE_VGPU, 0x31c22912, 0x7210, 0x11ed, 0xbf, 0x22, 0xbc
 #define VIRTGPU_PARAM_CONTEXT_INIT          6 /* DRM_VIRTGPU_CONTEXT_INIT */
 #define VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs  7 /* Bitmask of supported capability set ids */
 
-// make 1byte alignment to communicate with r0/r3
-#pragma pack(push)
-#pragma pack(1)
+#define VIRTGPU_EXECBUF_FENCE_FD_IN	0x01
+#define VIRTGPU_EXECBUF_FENCE_FD_OUT	0x02
+#define VIRTGPU_EXECBUF_RING_IDX	0x04
+#define VIRTGPU_EXECBUF_FLAGS  (\
+		VIRTGPU_EXECBUF_FENCE_FD_IN |\
+		VIRTGPU_EXECBUF_FENCE_FD_OUT |\
+		VIRTGPU_EXECBUF_RING_IDX |\
+		0)
 
 struct drm_virtgpu_getparam {
     __u64 param;
@@ -132,7 +137,10 @@ struct drm_virtgpu_execbuffer {
     __u64 command; /* void* */
     __u64 bo_handles;
     __u32 num_bo_handles;
-    __s32 fence_fd; /* in/out fence fd (see VIRTGPU_EXECBUF_FENCE_FD_IN/OUT) */
+
+    HANDLE in_fence_fd;
+    HANDLE out_fence_fd;
+
     __u32 ring_idx; /* command ring index (see VIRTGPU_EXECBUF_RING_IDX) */
     __u32 pad;
 };
@@ -172,7 +180,5 @@ struct drm_virtgpu_3d_transfer {
     __u32 offset;
     __u32 stride;
     __u32 layer_stride;
+    __u32 pad;
 };
-
-// pop back alignment
-#pragma pack(pop)
