@@ -30,6 +30,7 @@
 struct virtio_vgpu_config {
     __u8  staging;
     __u8  num_queues;
+    __u32 num_capsets;
     __u64 memory_size;
     __u64 capabilities;
 };
@@ -59,9 +60,10 @@ typedef struct _DEVICE_CONTEXT {
 } DEVICE_CONTEXT, * PDEVICE_CONTEXT;
 
 typedef struct _CAPSETS {
-    UINT32					NumCaps;
-    BOOLEAN					Initialized;
+    BOOLEAN                 Initialized;
+    ULONG32					NumCaps;
     PVIRTIO_GPU_DRV_CAPSET	Data;
+    ULONG64                 CapsetIdMask;
 }CAPSETS, * PCAPSETS;
 
 typedef struct _SHARE_DESCRIPTOR {

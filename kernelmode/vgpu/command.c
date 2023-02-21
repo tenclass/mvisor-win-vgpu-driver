@@ -132,10 +132,9 @@ VOID GetCapsInfo(PDEVICE_CONTEXT Context)
         Capsets.Data[i].id = resp->capset_id;
         Capsets.Data[i].max_size = resp->capset_max_size;
         Capsets.Data[i].max_version = resp->capset_max_version;
+        Capsets.CapsetIdMask |= (1LL << resp->capset_id);
         FreeCommandBuffer(Context, buffer);
     }
-
-    Capsets.Initialized = TRUE;
 }
 
 VOID GetCaps(PDEVICE_CONTEXT Context, INT32 CapsIndex, UINT32 CapsVer, PVOID pCaps)
@@ -164,7 +163,7 @@ VOID GetCaps(PDEVICE_CONTEXT Context, INT32 CapsIndex, UINT32 CapsVer, PVOID pCa
     FreeCommandBuffer(Context, buffer);
 }
 
-VOID CreateVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId)
+VOID CreateVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ContextInit)
 {
     struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
     UINT32 outNum;
@@ -174,7 +173,7 @@ VOID CreateVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId)
 
     cmd->hdr.ctx_id = VirglContextId;
     cmd->hdr.type = VIRTIO_GPU_CMD_CTX_CREATE;
-    cmd->context_init = 0;
+    cmd->context_init = ContextInit;
 
     STRING debugName = RTL_CONSTANT_STRING("tenclass");
     RtlCopyMemory(&cmd->debug_name, debugName.Buffer, debugName.Length);

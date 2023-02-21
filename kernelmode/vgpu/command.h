@@ -261,7 +261,7 @@ typedef struct _VIRTGPU_TRANSFER_HOST_3D_PARAM {
 
 VOID GetCapsInfo(PDEVICE_CONTEXT Context);
 VOID GetCaps(PDEVICE_CONTEXT Context, INT32 CapsIndex, UINT32 CapsVer, PVOID pCaps);
-VOID CreateVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId);
+VOID CreateVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ContextInit);
 VOID DestroyVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId);
 VOID FreeCommandBuffer(PDEVICE_CONTEXT Context, PVGPU_BUFFER pBuffer);
 VOID Create2DResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);

@@ -286,8 +286,8 @@ VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t Out
 
     switch (IoControlCode)
     {
-    case IOCTL_VIRTIO_VGPU_CREATE_CONTEXT:
-        status = CtlCreateVirglContext(GetDeviceContext(WdfIoQueueGetDevice(Queue)), HandleToULong(PsGetCurrentProcessId()));
+    case IOCTL_VIRTIO_VGPU_CONTEXT_INIT:
+        status = CtlInitVirglContext(GetDeviceContext(WdfIoQueueGetDevice(Queue)), Request, InputBufferLength, &bytesReturn);
         break;
     case IOCTL_VIRTIO_VGPU_DESTROY_CONTEXT: 
     {
@@ -405,6 +405,14 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
     // get vgpu memory config
     VirtIOWdfDeviceGet(&context->VDevice, FIELD_OFFSET(struct virtio_vgpu_config, memory_size), &vgpuMemorySize, sizeof(ULONG64));
 
+    // get vgpu num_capsets config
+    VirtIOWdfDeviceGet(&context->VDevice, FIELD_OFFSET(struct virtio_vgpu_config, num_capsets), &Capsets.NumCaps, sizeof(ULONG32));
+
+    // initialize Capsets
+    Capsets.Initialized = FALSE;
+    Capsets.Data = ExAllocatePool2(POOL_FLAG_NON_PAGED, Capsets.NumCaps * sizeof(VIRTIO_GPU_DRV_CAPSET), VIRTIO_VGPU_MEMORY_TAG);
+    ASSERT(Capsets.Data != NULL);
+
     highestAcceptableAddress.QuadPart = 0xFFFFFFFFFF;// 512G
     context->VgpuMemoryAddress = MmAllocateContiguousMemory(vgpuMemorySize, highestAcceptableAddress);
     if (!context->VgpuMemoryAddress)
@@ -417,7 +425,6 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
 
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = Device;
-
     for (size_t i = 0; i < context->NumVirtQueues; i++)
     {
         status = WdfSpinLockCreate(&attributes, &context->VirtQueueLocks[i]);
@@ -427,12 +434,6 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
             return status;
         }
     }
-
-    // initialize Capsets
-    Capsets.NumCaps = 2;
-    Capsets.Initialized = FALSE;
-    Capsets.Data = ExAllocatePool2(POOL_FLAG_NON_PAGED, Capsets.NumCaps * sizeof(VIRTIO_GPU_DRV_CAPSET), VIRTIO_VGPU_MEMORY_TAG);
-    ASSERT(Capsets.Data != NULL);
 
     PsSetCreateProcessNotifyRoutine(ProcessNotify, FALSE);
     InitializeListHead(&VirglContextList);

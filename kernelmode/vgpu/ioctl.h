@@ -24,7 +24,7 @@
 // 31c22912-7210-11ed-bf22-bce92fa2e22d
 DEFINE_GUID(GUID_DEVINTERFACE_VGPU, 0x31c22912, 0x7210, 0x11ed, 0xbf, 0x22, 0xbc, 0xe9, 0x2f, 0xa2, 0xe2, 0x2d);
 
-#define IOCTL_VIRTIO_VGPU_CREATE_CONTEXT CTL_CODE(FILE_DEVICE_UNKNOWN, \
+#define IOCTL_VIRTIO_VGPU_CONTEXT_INIT CTL_CODE(FILE_DEVICE_UNKNOWN, \
     0x800, \
     METHOD_OUT_DIRECT, \
     FILE_ANY_ACCESS)
@@ -181,4 +181,21 @@ struct drm_virtgpu_3d_transfer {
     __u32 stride;
     __u32 layer_stride;
     __u32 pad;
+};
+
+#define MAX_CAPSET_ID 63
+#define VIRTGPU_CONTEXT_PARAM_CAPSET_ID       0x0001
+#define VIRTGPU_CONTEXT_PARAM_NUM_RINGS       0x0002
+#define VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK 0x0003
+struct drm_virtgpu_context_set_param {
+    __u64 param;
+    __u64 value;
+};
+
+struct drm_virtgpu_context_init {
+    __u32 num_params;
+    __u32 pad;
+
+    /* pointer to drm_virtgpu_context_set_param array */
+    __u64 ctx_set_params;
 };

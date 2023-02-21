@@ -1,6 +1,6 @@
-From 8e432d6c3beffe3256f3fcf76ef8312fb55a3638 Mon Sep 17 00:00:00 2001
+From 9bf92a7eccb1aaed686085fa34f1823cc78f2b23 Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Mon, 20 Feb 2023 20:38:46 +0800
+Date: Tue, 21 Feb 2023 16:14:59 +0800
 Subject: [PATCH] mesa virgl icd for windows
 
 ---
@@ -20,17 +20,17 @@ Subject: [PATCH] mesa virgl icd for windows
  src/gallium/drivers/virgl/virgl_winsys.h      |   8 +-
  src/gallium/meson.build                       |   2 +-
  src/gallium/targets/wgl/meson.build           |   2 +-
- src/gallium/targets/wgl/wgl.c                 |  42 +-
+ src/gallium/targets/wgl/wgl.c                 |  38 +
  src/gallium/winsys/virgl/drm/meson.build      |   2 +-
  .../winsys/virgl/drm/virgl_drm_public.h       |   2 +-
- .../winsys/virgl/drm/virgl_drm_winsys.c       | 262 ++++-
+ .../winsys/virgl/drm/virgl_drm_winsys.c       | 356 ++++++-
  .../winsys/virgl/drm/virgl_drm_winsys.h       |  27 +-
  src/gallium/winsys/virgl/lib/ioctl.h          |  82 ++
  src/gallium/winsys/virgl/lib/meson.build      |  34 +
- src/gallium/winsys/virgl/lib/vgpu_api.c       | 300 ++++++
+ src/gallium/winsys/virgl/lib/vgpu_api.c       | 303 ++++++
  src/gallium/winsys/virgl/lib/vgpu_api.h       |  47 +
- src/util/u_atomic.h                           |  12 +-
- 26 files changed, 1876 insertions(+), 80 deletions(-)
+ src/util/u_atomic.h                           |  45 +
+ 26 files changed, 2042 insertions(+), 40 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -1561,7 +1561,7 @@ index eaca0aec86b..433d24ed395 100644
    ],
    link_args : gallium_wgl_link_args,
 diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
-index da44e146488..fc3a810ad26 100644
+index da44e146488..a7e8bed1154 100644
 --- a/src/gallium/targets/wgl/wgl.c
 +++ b/src/gallium/targets/wgl/wgl.c
 @@ -43,6 +43,10 @@
@@ -1579,37 +1579,33 @@ index da44e146488..fc3a810ad26 100644
  #include "zink/zink_public.h"
  #endif
  
-+#ifdef GALLIUM_VIRGL
++#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +#include "virgl/drm/virgl_drm_public.h"
 +#endif
 +
  #ifdef GALLIUM_LLVMPIPE
  static boolean use_llvmpipe = FALSE;
  #endif
-@@ -72,7 +80,11 @@ static boolean use_d3d12 = FALSE;
+@@ -72,6 +80,10 @@ static boolean use_d3d12 = FALSE;
  #ifdef GALLIUM_ZINK
  static boolean use_zink = FALSE;
  #endif
-+#ifdef GALLIUM_VIRGL
++#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +static boolean use_virgl = FALSE;
++static HANDLE vgpu_handle = INVALID_HANDLE_VALUE;
 +#endif
  
-+static HANDLE vgpu_handle = INVALID_HANDLE_VALUE;
  static const char *created_driver_name = NULL;
  
- static struct pipe_screen *
-@@ -106,7 +118,17 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
-       screen = softpipe_create_screen(winsys);
+@@ -107,6 +119,15 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
     }
  #endif
--
-+#ifdef GALLIUM_VIRGL
+ 
++#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +   if (strcmp(driver, "virgl") == 0) {
 +      assert(vgpu_handle == INVALID_HANDLE_VALUE);
 +
 +      vgpu_handle = GetHandleFromVgpu();
-+      CreateVirglContext(vgpu_handle);
-+      
 +      screen = virgl_drm_screen_create(vgpu_handle, NULL, winsys);
 +      use_virgl = TRUE;
 +   }
@@ -1617,22 +1613,22 @@ index da44e146488..fc3a810ad26 100644
     return screen;
  }
  
-@@ -128,6 +150,9 @@ wgl_screen_create(HDC hDC)
+@@ -128,6 +149,9 @@ wgl_screen_create(HDC hDC)
  #ifdef GALLIUM_ZINK
        sw_only ? "" : "zink",
  #endif
-+#ifdef GALLIUM_VIRGL
++#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +      sw_only ? "" : "virgl",
 +#endif
  #if defined(GALLIUM_LLVMPIPE)
        "llvmpipe",
  #endif
-@@ -203,6 +228,13 @@ wgl_present(struct pipe_screen *screen,
+@@ -203,6 +227,13 @@ wgl_present(struct pipe_screen *screen,
     dt = softpipe_resource(res)->dt,
     gdi_sw_display(winsys, dt, hDC);
  #endif
 +
-+#ifdef GALLIUM_VIRGL
++#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +   if (use_virgl) {
 +      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, NULL);
 +      return;
@@ -1641,7 +1637,7 @@ index da44e146488..fc3a810ad26 100644
  }
  
  
-@@ -277,6 +309,7 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+@@ -277,6 +308,7 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
  {
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
@@ -1649,14 +1645,13 @@ index da44e146488..fc3a810ad26 100644
        stw_init(&stw_winsys);
        stw_init_thread();
        break;
-@@ -290,6 +323,13 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+@@ -290,6 +322,12 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
        break;
  
     case DLL_PROCESS_DETACH:
 +      _debug_printf("call DLL_PROCESS_DETACH\n");
-+#ifdef GALLIUM_VIRGL
-+      if (vgpu_handle != INVALID_HANDLE_VALUE)
-+      {
++#if defined(GALLIUM_VIRGL) && defined(_WIN32)
++      if (vgpu_handle != INVALID_HANDLE_VALUE) {
 +         DestroyVirglContext(vgpu_handle);
 +      }
 +#endif
@@ -1688,41 +1683,41 @@ index 32df3945ff4..c3a4fd4f49d 100644
  
  #endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-index 6ae63e75758..4cce5899923 100644
+index 6ae63e75758..9d5cfc1a7ab 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-@@ -25,10 +25,17 @@
+@@ -25,10 +25,15 @@
  #include <fcntl.h>
  #include <limits.h>
  #include <stdio.h>
 +
-+#if _WIN32
++#ifdef _WIN32
 +#include <windows.h>
 +#else
  #include <sys/ioctl.h>
  #include <sys/stat.h>
--
-+#include <libsync.h>
-+#include <xf86drm.h>
+ 
  #include "util/os_mman.h"
 +#endif
-+
  #include "util/os_file.h"
  #include "util/os_time.h"
  #include "util/u_memory.h"
-@@ -36,18 +43,24 @@
- #include "util/u_hash_table.h"
+@@ -37,17 +42,29 @@
  #include "util/u_inlines.h"
  #include "util/u_pointer.h"
-+#include "frontend/sw_winsys.h"
  #include "frontend/drm_driver.h"
++#ifdef _WIN32
++#include "frontend/sw_winsys.h"
 +#include "virgl/virgl_resource.h"
++#endif
  #include "virgl/virgl_screen.h"
  #include "virgl/virgl_public.h"
  #include "virtio-gpu/virgl_protocol.h"
  
--#include <xf86drm.h>
--#include <libsync.h>
++#ifndef _WIN32
+ #include <xf86drm.h>
+ #include <libsync.h>
++#endif
  #include "drm-uapi/virtgpu_drm.h"
  
  #include "virgl_drm_winsys.h"
@@ -1737,7 +1732,7 @@ index 6ae63e75758..4cce5899923 100644
  // Delete local definitions when virglrenderer_hw.h becomes public
  #define VIRGL_DRM_CAPSET_VIRGL  1
  #define VIRGL_DRM_CAPSET_VIRGL2 2
-@@ -93,8 +106,14 @@ static void virgl_hw_res_destroy(struct virgl_drm_winsys *qdws,
+@@ -93,8 +110,14 @@ static void virgl_hw_res_destroy(struct virgl_drm_winsys *qdws,
           _mesa_hash_table_remove_key(qdws->bo_names,
                                  (void *)(uintptr_t)res->flink_name);
        mtx_unlock(&qdws->bo_handles_mutex);
@@ -1753,7 +1748,7 @@ index 6ae63e75758..4cce5899923 100644
  
        memset(&args, 0, sizeof(args));
        args.handle = res->bo_handle;
-@@ -117,8 +136,14 @@ static boolean virgl_drm_resource_is_busy(struct virgl_winsys *vws,
+@@ -117,8 +140,14 @@ static boolean virgl_drm_resource_is_busy(struct virgl_winsys *vws,
     waitcmd.flags = VIRTGPU_WAIT_NOWAIT;
  
     ret = drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_WAIT, &waitcmd);
@@ -1768,7 +1763,7 @@ index 6ae63e75758..4cce5899923 100644
  
     p_atomic_set(&res->maybe_busy, false);
  
-@@ -200,8 +225,15 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
+@@ -200,8 +229,15 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
     /* Make sure blob is page aligned. */
     if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
                  VIRGL_RESOURCE_FLAG_MAP_COHERENT)) {
@@ -1784,7 +1779,7 @@ index 6ae63e75758..4cce5899923 100644
     }
  
     blob_id = p_atomic_inc_return(&qdws->blob_id);
-@@ -218,7 +250,7 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
+@@ -218,7 +254,7 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
     cmd[VIRGL_PIPE_RES_CREATE_FLAGS] = flags;
     cmd[VIRGL_PIPE_RES_CREATE_BLOB_ID] = blob_id;
  
@@ -1793,48 +1788,44 @@ index 6ae63e75758..4cce5899923 100644
     drm_rc_blob.cmd_size = 4 * (VIRGL_PIPE_RES_CREATE_SIZE + 1);
     drm_rc_blob.size = size;
     drm_rc_blob.blob_mem = VIRTGPU_BLOB_MEM_HOST3D;
-@@ -475,6 +507,13 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
+@@ -475,6 +511,12 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
                                          uint64_t *modifier,
                                          uint32_t *blob_mem)
  {
 +#ifdef _WIN32
 +   _debug_printf("virgl_drm_winsys_resource_create_handle not implememt\n");
 +   assert(0);
-+
 +   return NULL;
 +#else
 +
     struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
     struct drm_gem_open open_arg = {};
     struct drm_virtgpu_resource_info info_arg = {};
-@@ -573,6 +612,8 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
+@@ -573,6 +615,7 @@ virgl_drm_winsys_resource_create_handle(struct virgl_winsys *qws,
  done:
     mtx_unlock(&qdws->bo_handles_mutex);
     return res;
-+
 +#endif
  }
  
  static void
-@@ -632,6 +673,13 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
+@@ -632,6 +675,12 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
                                                      uint32_t stride,
                                                      struct winsys_handle *whandle)
   {
 +#ifdef _WIN32
 +   _debug_printf("virgl_drm_winsys_resource_get_handle not implememt\n");
 +   assert(0);
-+
 +   return FALSE;
 +#else
 +
     struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
     struct drm_gem_flink flink;
  
-@@ -667,6 +715,8 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
+@@ -667,6 +716,7 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
  
     whandle->stride = stride;
     return TRUE;
-+
 +#endif
  }
  
@@ -1986,7 +1977,7 @@ index 6ae63e75758..4cce5899923 100644
  
     ret = drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
     if (ret == -1 && errno == EINVAL) {
-@@ -1023,16 +1124,24 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
+@@ -1023,6 +1124,8 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        if (ret == -1)
            return ret;
     }
@@ -1995,23 +1986,23 @@ index 6ae63e75758..4cce5899923 100644
     return ret;
  }
  
- static struct pipe_fence_handle *
- virgl_cs_create_fence(struct virgl_winsys *vws, int fd)
+@@ -1031,8 +1134,15 @@ virgl_cs_create_fence(struct virgl_winsys *vws, int fd)
  {
+    if (!vws->supports_fences)
+       return NULL;
++      
 +#ifdef _WIN32
-+   //not implement
++   _debug_printf("virgl_cs_create_fence not implement fd=%d\n", fd);
 +   assert(0);
 +   return NULL;
 +#else
-    if (!vws->supports_fences)
-       return NULL;
  
     return virgl_drm_fence_create(vws, fd, true);
 +#endif
  }
  
  static bool virgl_fence_wait(struct virgl_winsys *vws,
-@@ -1046,7 +1155,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+@@ -1046,16 +1156,24 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
        int timeout_poll;
  
        if (timeout == 0)
@@ -2023,19 +2014,21 @@ index 6ae63e75758..4cce5899923 100644
  
        timeout_ms = timeout / 1000000;
        /* round up */
-@@ -1055,7 +1168,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
- 
-       timeout_poll = timeout_ms <= INT_MAX ? (int) timeout_ms : -1;
+       if (timeout_ms * 1000000 < timeout)
+          timeout_ms++;
  
 +#ifdef _WIN32
++      timeout_poll = timeout_ms <= INT_MAX ? (int) timeout_ms : INFINITE;
 +      return WaitForSingleObject(fence->fd, timeout_poll) == WAIT_OBJECT_0;
 +#else
+       timeout_poll = timeout_ms <= INT_MAX ? (int) timeout_ms : -1;
+-
        return sync_wait(fence->fd, timeout_poll) == 0;
 +#endif
     }
  
     if (timeout == 0)
-@@ -1085,7 +1202,11 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
+@@ -1085,7 +1203,11 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
  
     if (pipe_reference(&dfence->reference, &sfence->reference)) {
        if (vws->supports_fences) {
@@ -2047,57 +2040,68 @@ index 6ae63e75758..4cce5899923 100644
        } else {
           virgl_drm_resource_reference(vws, &dfence->hw_res, NULL);
        }
-@@ -1109,11 +1230,15 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
+@@ -1109,7 +1231,12 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
     if (!fence->external)
        return;
  
 +#ifdef _WIN32
 +   cbuf->in_fence_fd = fence->fd;
++   _debug_printf("call virgl_fence_server_sync fence->fd=%d\n", fence->fd);
 +#else
     sync_accumulate("virgl", &cbuf->in_fence_fd, fence->fd);
 +#endif
  }
  
--static int virgl_fence_get_fd(struct virgl_winsys *vws,
--                              struct pipe_fence_handle *_fence)
-+#ifndef _WIN32
-+static int virgl_fence_get_fd(struct virgl_winsys *vws, struct pipe_fence_handle *_fence)
- {
-    struct virgl_drm_fence *fence = virgl_drm_fence(_fence);
+ static int virgl_fence_get_fd(struct virgl_winsys *vws,
+@@ -1120,10 +1247,19 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
+    if (!vws->supports_fences)
+       return -1;
  
-@@ -1122,8 +1247,9 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
- 
++#ifdef _WIN32
++    _debug_printf("virgl_fence_get_fd not implement on windows fence->fd=%d\n", fence->fd);
++   return -1;
++#else
     return os_dupfd_cloexec(fence->fd);
- }
 +#endif
+ }
  
--static int virgl_drm_get_version(int fd)
++#ifdef _WIN32
 +static int virgl_drm_get_version(HANDLE fd)
++#else
+ static int virgl_drm_get_version(int fd)
++#endif
  {
  	int ret;
  	drmVersionPtr version;
-@@ -1162,7 +1288,7 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
+@@ -1162,7 +1298,11 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
     virgl_hw_res_destroy(qdws, res);
  }
  
--static int virgl_init_context(int drmFD)
++#ifdef _WIN32
 +static int virgl_init_context(HANDLE drmFD)
++#else
+ static int virgl_init_context(int drmFD)
++#endif
  {
     int ret;
     struct drm_virtgpu_context_init init = { 0 };
-@@ -1186,7 +1312,7 @@ static int virgl_init_context(int drmFD)
+@@ -1186,7 +1326,11 @@ static int virgl_init_context(int drmFD)
                           VIRGL_DRM_CAPSET_VIRGL2 :
                           VIRGL_DRM_CAPSET_VIRGL;
  
--   init.ctx_set_params = (unsigned long)(void *)&ctx_set_param;
++#ifdef _WIN32
 +   init.ctx_set_params = (uint64_t)(void *)&ctx_set_param;
++#else
+    init.ctx_set_params = (unsigned long)(void *)&ctx_set_param;
++#endif
     init.num_params = 1;
  
     ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
-@@ -1203,21 +1329,68 @@ static int virgl_init_context(int drmFD)
+@@ -1203,6 +1347,153 @@ static int virgl_init_context(int drmFD)
     return 0;
  }
  
++#ifdef _WIN32
 +static void virgl_flush_frontbuffer(struct pipe_screen *screen,
 +                                    struct pipe_context *ctx,
 +                                    struct pipe_resource *res,
@@ -2144,158 +2148,176 @@ index 6ae63e75758..4cce5899923 100644
 +   }
 +}
 +
- static struct virgl_winsys *
--virgl_drm_winsys_create(int drmFD)
++static struct virgl_winsys *
 +virgl_drm_winsys_create(HANDLE drmFD)
- {
-    static const unsigned CACHE_TIMEOUT_USEC = 1000000;
-    struct virgl_drm_winsys *qdws;
-    int drm_version;
-    int ret;
- 
++{
++   static const unsigned CACHE_TIMEOUT_USEC = 1000000;
++   struct virgl_drm_winsys *qdws;
++   int drm_version;
++   int ret;
++
 +   qdws = CALLOC_STRUCT(virgl_drm_winsys);
 +   if (!qdws)
 +      return NULL;
 +   qdws->fd = drmFD;
 +   
-    for (uint32_t i = 0; i < ARRAY_SIZE(params); i++) {
--      struct drm_virtgpu_getparam getparam = { 0 };
--      uint64_t value = 0;
--      getparam.param = params[i].param;
--      getparam.value = (uint64_t)(uintptr_t)&value;
--      ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_GETPARAM, &getparam);
--      params[i].value = (ret == 0) ? value : 0;
++   for (uint32_t i = 0; i < ARRAY_SIZE(params); i++) {
 +      params[i].value = virgl_get_param(&qdws->base, params[i].param);
 +      _debug_printf("param=%d value=%ld\n", params[i].param, params[i].value);
-    }
- 
-    if (!params[param_3d_features].value)
-@@ -1233,11 +1406,6 @@ virgl_drm_winsys_create(int drmFD)
-          return NULL;
-    }
- 
--   qdws = CALLOC_STRUCT(virgl_drm_winsys);
--   if (!qdws)
--      return NULL;
--
--   qdws->fd = drmFD;
-    virgl_resource_cache_init(&qdws->cache, CACHE_TIMEOUT_USEC,
-                              virgl_drm_resource_cache_entry_is_busy,
-                              virgl_drm_resource_cache_entry_release,
-@@ -1250,6 +1418,7 @@ virgl_drm_winsys_create(int drmFD)
-    qdws->bo_names = util_hash_table_create_ptr_keys();
-    qdws->base.destroy = virgl_drm_winsys_destroy;
- 
++   }
++
++   if (!params[param_3d_features].value)
++      return NULL;
++
++   drm_version = virgl_drm_get_version(drmFD);
++   if (drm_version < 0)
++      return NULL;
++
++   if (params[param_context_init].value) {
++      ret = virgl_init_context(drmFD);
++      if (ret)
++         return NULL;
++   }
++
++   virgl_resource_cache_init(&qdws->cache, CACHE_TIMEOUT_USEC,
++                             virgl_drm_resource_cache_entry_is_busy,
++                             virgl_drm_resource_cache_entry_release,
++                             qdws);
++   (void) mtx_init(&qdws->mutex, mtx_plain);
++   (void) mtx_init(&qdws->bo_handles_mutex, mtx_plain);
++   p_atomic_set(&qdws->blob_id, 0);
++
++   qdws->bo_handles = util_hash_table_create_ptr_keys();
++   qdws->bo_names = util_hash_table_create_ptr_keys();
++   qdws->base.destroy = virgl_drm_winsys_destroy;
++
 +   qdws->base.get_param = virgl_get_param;
-    qdws->base.transfer_put = virgl_bo_transfer_put;
-    qdws->base.transfer_get = virgl_bo_transfer_get;
-    qdws->base.resource_create = virgl_drm_winsys_resource_cache_create;
-@@ -1266,12 +1435,17 @@ virgl_drm_winsys_create(int drmFD)
-    qdws->base.submit_cmd = virgl_drm_winsys_submit_cmd;
-    qdws->base.emit_res = virgl_drm_emit_res;
-    qdws->base.res_is_referenced = virgl_drm_res_is_ref;
++   qdws->base.transfer_put = virgl_bo_transfer_put;
++   qdws->base.transfer_get = virgl_bo_transfer_get;
++   qdws->base.resource_create = virgl_drm_winsys_resource_cache_create;
++   qdws->base.resource_reference = virgl_drm_resource_reference;
++   qdws->base.resource_create_from_handle = virgl_drm_winsys_resource_create_handle;
++   qdws->base.resource_set_type = virgl_drm_winsys_resource_set_type;
++   qdws->base.resource_get_handle = virgl_drm_winsys_resource_get_handle;
++   qdws->base.resource_get_storage_size = virgl_drm_winsys_resource_get_storage_size;
++   qdws->base.resource_map = virgl_drm_resource_map;
++   qdws->base.resource_wait = virgl_drm_resource_wait;
++   qdws->base.resource_is_busy = virgl_drm_resource_is_busy;
++   qdws->base.cmd_buf_create = virgl_drm_cmd_buf_create;
++   qdws->base.cmd_buf_destroy = virgl_drm_cmd_buf_destroy;
++   qdws->base.submit_cmd = virgl_drm_winsys_submit_cmd;
++   qdws->base.emit_res = virgl_drm_emit_res;
++   qdws->base.res_is_referenced = virgl_drm_res_is_ref;
 +   qdws->base.flush_frontbuffer = virgl_flush_frontbuffer;
- 
-    qdws->base.cs_create_fence = virgl_cs_create_fence;
-    qdws->base.fence_wait = virgl_fence_wait;
-    qdws->base.fence_reference = virgl_fence_reference;
-    qdws->base.fence_server_sync = virgl_fence_server_sync;
 +
-+#ifndef _WIN32
-    qdws->base.fence_get_fd = virgl_fence_get_fd;
-+#endif
++   qdws->base.cs_create_fence = virgl_cs_create_fence;
++   qdws->base.fence_wait = virgl_fence_wait;
++   qdws->base.fence_reference = virgl_fence_reference;
++   qdws->base.fence_server_sync = virgl_fence_server_sync;
++   qdws->base.fence_get_fd = virgl_fence_get_fd;
++   qdws->base.get_caps = virgl_drm_get_caps;
++   qdws->base.supports_fences =  drm_version >= VIRGL_DRM_VERSION_FENCE_FD;
++   qdws->base.supports_encoded_transfers = 1;
 +
-    qdws->base.get_caps = virgl_drm_get_caps;
-    qdws->base.supports_fences =  drm_version >= VIRGL_DRM_VERSION_FENCE_FD;
-    qdws->base.supports_encoded_transfers = 1;
-@@ -1283,7 +1457,7 @@ virgl_drm_winsys_create(int drmFD)
- }
- 
- static struct hash_table *fd_tab = NULL;
--static mtx_t virgl_screen_mutex = _MTX_INITIALIZER_NP;
++   qdws->base.supports_coherent = params[param_resource_blob].value &&
++                                  params[param_host_visible].value;
++   return &qdws->base;
++}
++
++static struct hash_table *fd_tab = NULL;
 +static simple_mtx_t virgl_screen_mutex = SIMPLE_MTX_INITIALIZER;
- 
- static void
- virgl_drm_screen_destroy(struct pipe_screen *pscreen)
-@@ -1291,14 +1465,14 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
-    struct virgl_screen *screen = virgl_screen(pscreen);
-    boolean destroy;
- 
--   mtx_lock(&virgl_screen_mutex);
++
++static void
++virgl_drm_screen_destroy(struct pipe_screen *pscreen)
++{
++   struct virgl_screen *screen = virgl_screen(pscreen);
++   boolean destroy;
++
 +   simple_mtx_lock(&virgl_screen_mutex);
-    destroy = --screen->refcnt == 0;
-    if (destroy) {
--      int fd = virgl_drm_winsys(screen->vws)->fd;
--      _mesa_hash_table_remove_key(fd_tab, intptr_to_pointer(fd));
--      close(fd);
++   destroy = --screen->refcnt == 0;
++   if (destroy) {
 +      HANDLE fd = virgl_drm_winsys(screen->vws)->fd;
 +      _mesa_hash_table_remove_key(fd_tab, fd);
 +      CloseHandle(fd);
-    }
--   mtx_unlock(&virgl_screen_mutex);
++   }
 +   simple_mtx_unlock(&virgl_screen_mutex);
++
++   if (destroy) {
++      pscreen->destroy = screen->winsys_priv;
++      pscreen->destroy(pscreen);
++   }
++}
++#else
+ static struct virgl_winsys *
+ virgl_drm_winsys_create(int drmFD)
+ {
+@@ -1305,6 +1596,7 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+       pscreen->destroy(pscreen);
+    }
+ }
++#endif
  
-    if (destroy) {
-       pscreen->destroy = screen->winsys_priv;
-@@ -1344,33 +1518,32 @@ equal_fd(const void *key1, const void *key2)
+ static uint32_t
+ hash_fd(const void *key)
+@@ -1343,6 +1635,53 @@ equal_fd(const void *key1, const void *key2)
+    return false;
  }
  
- struct pipe_screen *
--virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
++#ifdef _WIN32
++struct pipe_screen *
 +virgl_drm_screen_create(HANDLE fd, const struct pipe_screen_config *config, struct sw_winsys *winsys)
- {
-    struct pipe_screen *pscreen = NULL;
- 
--   mtx_lock(&virgl_screen_mutex);
++{
++   struct pipe_screen *pscreen = NULL;
++
 +   simple_mtx_lock(&virgl_screen_mutex);
-    if (!fd_tab) {
-       fd_tab = _mesa_hash_table_create(NULL, hash_fd, equal_fd);
-       if (!fd_tab)
-          goto unlock;
-    }
- 
--   pscreen = util_hash_table_get(fd_tab, intptr_to_pointer(fd));
++   if (!fd_tab) {
++      fd_tab = _mesa_hash_table_create(NULL, hash_fd, equal_fd);
++      if (!fd_tab)
++         goto unlock;
++   }
++
 +   pscreen = util_hash_table_get(fd_tab, fd);
-    if (pscreen) {
-       virgl_screen(pscreen)->refcnt++;
-    } else {
-       struct virgl_winsys *vws;
--      int dup_fd = os_dupfd_cloexec(fd);
- 
--      vws = virgl_drm_winsys_create(dup_fd);
++   if (pscreen) {
++      virgl_screen(pscreen)->refcnt++;
++   } else {
++      struct virgl_winsys *vws;
++
 +      vws = virgl_drm_winsys_create(fd);
-       if (!vws) {
--         close(dup_fd);
++      if (!vws) {
 +         CloseHandle(fd);
-          goto unlock;
-       }
- 
-       pscreen = virgl_create_screen(vws, config);
-       if (pscreen) {
--         _mesa_hash_table_insert(fd_tab, intptr_to_pointer(dup_fd), pscreen);
++         goto unlock;
++      }
++
++      pscreen = virgl_create_screen(vws, config);
++      if (pscreen) {
 +         _mesa_hash_table_insert(fd_tab, fd, pscreen);
- 
-          /* Bit of a hack, to avoid circular linkage dependency,
-           * ie. pipe driver having to call in to winsys, we
-@@ -1378,10 +1551,17 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
-           */
-          virgl_screen(pscreen)->winsys_priv = pscreen->destroy;
-          pscreen->destroy = virgl_drm_screen_destroy;
++
++         /* Bit of a hack, to avoid circular linkage dependency,
++          * ie. pipe driver having to call in to winsys, we
++          * override the pipe drivers screen->destroy():
++          */
++         virgl_screen(pscreen)->winsys_priv = pscreen->destroy;
++         pscreen->destroy = virgl_drm_screen_destroy;
 +
 +         // get sw_winsys
 +         virgl_screen(pscreen)->sws = winsys;
-       }
-    }
- 
- unlock:
--   mtx_unlock(&virgl_screen_mutex);
-+   simple_mtx_unlock(&virgl_screen_mutex);
-+   if (!pscreen) {
-+      _debug_printf("virgl_drm_screen_create failed err=%d\n", GetLastError());
++      }
 +   }
 +
++unlock:
++   simple_mtx_unlock(&virgl_screen_mutex);
++
++   return pscreen;
++}
++#else
+ struct pipe_screen *
+ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
+ {
+@@ -1385,3 +1724,4 @@ unlock:
+    mtx_unlock(&virgl_screen_mutex);
     return pscreen;
  }
++#endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
 index f17d89c098b..a31577de2af 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.h
@@ -2358,7 +2380,7 @@ index f17d89c098b..a31577de2af 100644
     unsigned cres;
 diff --git a/src/gallium/winsys/virgl/lib/ioctl.h b/src/gallium/winsys/virgl/lib/ioctl.h
 new file mode 100644
-index 00000000000..29938c86bd0
+index 00000000000..a6cedc37341
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/ioctl.h
 @@ -0,0 +1,82 @@
@@ -2383,12 +2405,12 @@ index 00000000000..29938c86bd0
 +#define IOCTL_H
 +
 +#include <winioctl.h>
-+#include <initguid.h> 
++#include <initguid.h>
 +
 +// 31c22912-7210-11ed-bf22-bce92fa2e22d
 +DEFINE_GUID(GUID_DEVINTERFACE_VGPU, 0x31c22912, 0x7210, 0x11ed, 0xbf, 0x22, 0xbc, 0xe9, 0x2f, 0xa2, 0xe2, 0x2d);
 +
-+#define IOCTL_VIRTIO_VGPU_CREATE_CONTEXT CTL_CODE(FILE_DEVICE_UNKNOWN, \
++#define IOCTL_VIRTIO_VGPU_CONTEXT_INIT CTL_CODE(FILE_DEVICE_UNKNOWN, \
 +    0x800, \
 +    METHOD_OUT_DIRECT, \
 +    FILE_ANY_ACCESS)
@@ -2486,10 +2508,10 @@ index 00000000000..6576e0616ef
 +)
 diff --git a/src/gallium/winsys/virgl/lib/vgpu_api.c b/src/gallium/winsys/virgl/lib/vgpu_api.c
 new file mode 100644
-index 00000000000..a7ab2e6e9a9
+index 00000000000..b70c4b79f92
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/vgpu_api.c
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,303 @@
 +/*
 + * MVisor vgpu Device guest driver
 + * Copyright (C) 2022 cair <rui.cai@tenclass.com>
@@ -2519,7 +2541,6 @@ index 00000000000..a7ab2e6e9a9
 +#include "util/u_debug.h"
 +
 +#include "drm-uapi/virtgpu_drm.h"
-+
 +
 +int drmPrimeHandleToFD(int fd, UINT32 handle, UINT32 flags, int *prime_fd)
 +{
@@ -2563,13 +2584,12 @@ index 00000000000..a7ab2e6e9a9
 +    PSP_DEVICE_INTERFACE_DETAIL_DATA DeviceInterfaceDetailData = NULL;
 +    SP_DEVINFO_DATA DevInfoData = {sizeof(SP_DEVINFO_DATA)};
 +    SP_DEVICE_INTERFACE_DATA DeviceInterfaceData;
-+    
++
 +    HardwareDeviceInfo = SetupDiGetClassDevs(
 +        &GUID_DEVINTERFACE_VGPU,
 +        NULL,
 +        NULL,
-+        (DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
-+        );
++        (DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
 +
 +    if (HardwareDeviceInfo == INVALID_HANDLE_VALUE)
 +    {
@@ -2587,7 +2607,7 @@ index 00000000000..a7ab2e6e9a9
 +
 +    SetupDiGetDeviceInterfaceDetail(HardwareDeviceInfo, &DeviceInterfaceData, NULL, 0, &RequiredLength, NULL);
 +    assert(RequiredLength > 0);
-+    
++
 +    DeviceInterfaceDetailData = (PSP_DEVICE_INTERFACE_DETAIL_DATA)malloc(RequiredLength);
 +    if (DeviceInterfaceDetailData == NULL)
 +    {
@@ -2602,8 +2622,7 @@ index 00000000000..a7ab2e6e9a9
 +        DeviceInterfaceDetailData,
 +        RequiredLength,
 +        NULL,
-+        &DevInfoData
-+        );
++        &DevInfoData);
 +    if (!bRet)
 +    {
 +        _debug_printf("SetupDiGetDeviceInterfaceDetail failed err=%d.\n", GetLastError());
@@ -2612,12 +2631,12 @@ index 00000000000..a7ab2e6e9a9
 +
 +    handle = CreateFile(DeviceInterfaceDetailData->DevicePath, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 +    if (handle == INVALID_HANDLE_VALUE)
-+    {   
++    {
 +        _debug_printf("CreateFile failed err=%d.\n", GetLastError());
 +        assert(0);
 +    }
 +
-+    free ((PVOID)DeviceInterfaceDetailData);
++    free((PVOID)DeviceInterfaceDetailData);
 +    SetupDiDestroyDeviceInfoList(HardwareDeviceInfo);
 +    return handle;
 +}
@@ -2625,8 +2644,8 @@ index 00000000000..a7ab2e6e9a9
 +static int ctl_get_param(HANDLE handle, struct drm_virtgpu_getparam *getparam)
 +{
 +    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_GETPARAM, &getparam->param, sizeof(uint64_t), 
-+        (void*)getparam->value, sizeof(uint64_t), &BytesReturned, NULL);
++    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_GETPARAM, &getparam->param, sizeof(uint64_t),
++                               (void *)getparam->value, sizeof(uint64_t), &BytesReturned, NULL);
 +    if (!ret)
 +    {
 +        _debug_printf("IOCTL_VIRTIO_VGPU_GETPARAM failed=%d\n", GetLastError());
@@ -2636,11 +2655,11 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_get_caps(HANDLE handle, struct drm_virtgpu_get_caps* getcaps)
++static int ctl_get_caps(HANDLE handle, struct drm_virtgpu_get_caps *getcaps)
 +{
 +    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_GET_CAPS, &getcaps->cap_set_id, sizeof(uint32_t) * 2, 
-+        (void*)getcaps->addr, getcaps->size, &BytesReturned, NULL);
++    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_GET_CAPS, &getcaps->cap_set_id, sizeof(uint32_t) * 2,
++                               (void *)getcaps->addr, getcaps->size, &BytesReturned, NULL);
 +    if (!ret)
 +    {
 +        _debug_printf("IOCTL_VIRTIO_VGPU_GET_CAPS failed=%d\n", GetLastError());
@@ -2650,11 +2669,11 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_create_resource(HANDLE handle, struct drm_virtgpu_resource_create* createcmd)
++static int ctl_create_resource(HANDLE handle, struct drm_virtgpu_resource_create *createcmd)
 +{
 +    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_RESOURCE_CREATE, createcmd, sizeof(*createcmd), 
-+        (void*)&createcmd->bo_handle, sizeof(uint32_t) * 2, &BytesReturned, NULL);
++    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_RESOURCE_CREATE, createcmd, sizeof(*createcmd),
++                               (void *)&createcmd->bo_handle, sizeof(uint32_t) * 2, &BytesReturned, NULL);
 +    if (!ret)
 +    {
 +        _debug_printf("IOCTL_VIRTIO_VGPU_RESOURCE_CREATE failed=%d\n", GetLastError());
@@ -2664,7 +2683,7 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_submit_command(HANDLE handle, struct drm_virtgpu_execbuffer* eb)
++static int ctl_submit_command(HANDLE handle, struct drm_virtgpu_execbuffer *eb)
 +{
 +    DWORD BytesReturned;
 +    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_EXECBUFFER, eb, sizeof(*eb), NULL, 0, &BytesReturned, NULL);
@@ -2677,7 +2696,7 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_close_resource(HANDLE handle, struct drm_gem_close* close)
++static int ctl_close_resource(HANDLE handle, struct drm_gem_close *close)
 +{
 +    DWORD BytesReturned;
 +    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_RESOURCE_CLOSE, close, sizeof(*close), NULL, 0, &BytesReturned, NULL);
@@ -2690,7 +2709,7 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_wait_resource(HANDLE handle, struct drm_virtgpu_3d_wait* wait)
++static int ctl_wait_resource(HANDLE handle, struct drm_virtgpu_3d_wait *wait)
 +{
 +    DWORD BytesReturned;
 +    ULONG32 result;
@@ -2704,7 +2723,7 @@ index 00000000000..a7ab2e6e9a9
 +    return result;
 +}
 +
-+static int ctl_map_resource(HANDLE handle, struct drm_virtgpu_map* map)
++static int ctl_map_resource(HANDLE handle, struct drm_virtgpu_map *map)
 +{
 +    DWORD BytesReturned;
 +    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_MAP, map, sizeof(*map), &map->offset, sizeof(ULONG64), &BytesReturned, NULL);
@@ -2717,7 +2736,7 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_transfer_to_host(HANDLE handle, struct drm_virtgpu_3d_transfer* transfer)
++static int ctl_transfer_to_host(HANDLE handle, struct drm_virtgpu_3d_transfer *transfer)
 +{
 +    DWORD BytesReturned;
 +    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_TRANSFER_TO_HOST, transfer, sizeof(*transfer), NULL, 0, &BytesReturned, NULL);
@@ -2730,13 +2749,26 @@ index 00000000000..a7ab2e6e9a9
 +    return 0;
 +}
 +
-+static int ctl_transfer_from_host(HANDLE handle, struct drm_virtgpu_3d_transfer* transfer)
++static int ctl_transfer_from_host(HANDLE handle, struct drm_virtgpu_3d_transfer *transfer)
 +{
 +    DWORD BytesReturned;
 +    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_TRANSFER_FROM_HOST, transfer, sizeof(*transfer), NULL, 0, &BytesReturned, NULL);
 +    if (!ret)
 +    {
 +        _debug_printf("IOCTL_VIRTIO_VGPU_TRANSFER_FROM_HOST failed=%d\n", GetLastError());
++        return -1;
++    }
++
++    return 0;
++}
++
++static int ctl_context_init(HANDLE handle, struct drm_virtgpu_context_init *init)
++{
++    DWORD BytesReturned;
++    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_CONTEXT_INIT, init, sizeof(*init), NULL, 0, &BytesReturned, NULL);
++    if (!ret)
++    {
++        _debug_printf("IOCTL_VIRTIO_VGPU_CONTEXT_INIT failed=%d\n", GetLastError());
 +        return -1;
 +    }
 +
@@ -2752,19 +2784,12 @@ index 00000000000..a7ab2e6e9a9
 +    }
 +}
 +
-+void CreateVirglContext(HANDLE handle)
-+{
-+    bool ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_CREATE_CONTEXT, NULL, 0, NULL, 0, NULL, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_CREATE_CONTEXT failed=%d\n", GetLastError());
-+    }
-+}
-+
 +int drmIoctl(HANDLE handle, unsigned long request, void *arg)
 +{
 +    switch (request)
 +    {
++    case DRM_IOCTL_VIRTGPU_CONTEXT_INIT:
++        return ctl_context_init(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_GETPARAM:
 +        return ctl_get_param(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_GET_CAPS:
@@ -2792,7 +2817,7 @@ index 00000000000..a7ab2e6e9a9
 +}
 diff --git a/src/gallium/winsys/virgl/lib/vgpu_api.h b/src/gallium/winsys/virgl/lib/vgpu_api.h
 new file mode 100644
-index 00000000000..0e8d7bfdf0d
+index 00000000000..aa1d51c2bec
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/vgpu_api.h
 @@ -0,0 +1,47 @@
@@ -2821,78 +2846,130 @@ index 00000000000..0e8d7bfdf0d
 + *
 + * \sa drmGetVersion() and drmSetVersion().
 + */
-+typedef struct _drmVersion {
-+    int     version_major;        /**< Major version */
-+    int     version_minor;        /**< Minor version */
-+    int     version_patchlevel;   /**< Patch level */
-+    int     name_len; 	          /**< Length of name buffer */
-+    char*   name;	          /**< Name of driver */
-+    int     date_len;             /**< Length of date buffer */
-+    char*   date;                /**< User-space buffer to hold date */
-+    int     desc_len;	          /**< Length of desc buffer */
-+    char*   desc;                /**< User-space buffer to hold desc */
++typedef struct _drmVersion
++{
++    int version_major;      /**< Major version */
++    int version_minor;      /**< Minor version */
++    int version_patchlevel; /**< Patch level */
++    int name_len;           /**< Length of name buffer */
++    char *name;             /**< Name of driver */
++    int date_len;           /**< Length of date buffer */
++    char *date;             /**< User-space buffer to hold date */
++    int desc_len;           /**< Length of desc buffer */
++    char *desc;             /**< User-space buffer to hold desc */
 +} drmVersion, *drmVersionPtr;
 +
-+int drmIoctl(HANDLE fd, unsigned long request, void* arg);
-+int drmPrimeHandleToFD(int fd, UINT32 handle, UINT32 flags, int* prime_fd);
-+int drmPrimeFDToHandle(int fd, int prime_fd, UINT32* handle);
++int drmIoctl(HANDLE fd, unsigned long request, void *arg);
++int drmPrimeHandleToFD(int fd, UINT32 handle, UINT32 flags, int *prime_fd);
++int drmPrimeFDToHandle(int fd, int prime_fd, UINT32 *handle);
 +drmVersionPtr drmGetVersion(HANDLE fd);
 +void drmFreeVersion(drmVersionPtr ptr);
 +HANDLE GetHandleFromVgpu(void);
-+void CreateVirglContext(HANDLE handle);
 +void DestroyVirglContext(HANDLE handle);
 +
 +#endif
 diff --git a/src/util/u_atomic.h b/src/util/u_atomic.h
-index ec4569d24f7..a265b72c5bb 100644
+index ec4569d24f7..23dafc9fbae 100644
 --- a/src/util/u_atomic.h
 +++ b/src/util/u_atomic.h
-@@ -149,7 +149,7 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+@@ -145,39 +145,75 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+ #define p_atomic_inc(_v) \
+    ((void) p_atomic_inc_return(_v))
+ 
++#ifdef _WIN32
++#define p_atomic_inc_return(_v) (\
++   sizeof *(_v) == sizeof(char)    ? p_atomic_add_return((_v), 1) : \
++   sizeof *(_v) == sizeof(short)   ? _InterlockedIncrement16((short *)  (_v)) : \
++   sizeof *(_v) == sizeof(long)    ? _InterlockedIncrement  ((long *)   (_v)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedIncrement64((__int64 *)(_v)) : \
++                                     (assert(!"should not get here"), 0))
++#else
+ #define p_atomic_inc_return(_v) (\
     sizeof *(_v) == sizeof(char)    ? p_atomic_add_return((_v), 1) : \
     sizeof *(_v) == sizeof(short)   ? _InterlockedIncrement16((short *)  (_v)) : \
     sizeof *(_v) == sizeof(long)    ? _InterlockedIncrement  ((long *)   (_v)) : \
--   sizeof *(_v) == sizeof(__int64) ? _interlockedincrement64((__int64 *)(_v)) : \
-+   sizeof *(_v) == sizeof(__int64) ? _InterlockedIncrement64((__int64 *)(_v)) : \
+    sizeof *(_v) == sizeof(__int64) ? _interlockedincrement64((__int64 *)(_v)) : \
                                       (assert(!"should not get here"), 0))
++#endif
  
  #define p_atomic_dec(_v) \
-@@ -159,7 +159,7 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+    ((void) p_atomic_dec_return(_v))
+ 
++#ifdef _WIN32
++#define p_atomic_dec_return(_v) (\
++   sizeof *(_v) == sizeof(char)    ? p_atomic_add_return((_v), -1) : \
++   sizeof *(_v) == sizeof(short)   ? _InterlockedDecrement16((short *)  (_v)) : \
++   sizeof *(_v) == sizeof(long)    ? _InterlockedDecrement  ((long *)   (_v)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedDecrement64((__int64 *)(_v)) : \
++                                     (assert(!"should not get here"), 0))
++#else
+ #define p_atomic_dec_return(_v) (\
     sizeof *(_v) == sizeof(char)    ? p_atomic_add_return((_v), -1) : \
     sizeof *(_v) == sizeof(short)   ? _InterlockedDecrement16((short *)  (_v)) : \
     sizeof *(_v) == sizeof(long)    ? _InterlockedDecrement  ((long *)   (_v)) : \
--   sizeof *(_v) == sizeof(__int64) ? _interlockeddecrement64((__int64 *)(_v)) : \
-+   sizeof *(_v) == sizeof(__int64) ? _InterlockedDecrement64((__int64 *)(_v)) : \
+    sizeof *(_v) == sizeof(__int64) ? _interlockeddecrement64((__int64 *)(_v)) : \
                                       (assert(!"should not get here"), 0))
++#endif
  
  #define p_atomic_add(_v, _i) \
-@@ -168,15 +168,15 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+    ((void) p_atomic_fetch_add((_v), (_i)))
+ 
++#ifdef _WIN32
++#define p_atomic_add_return(_v, _i) (\
++   sizeof *(_v) == sizeof(char)    ? _interlockedadd8 ((char *)   (_v), (_i)) : \
++   sizeof *(_v) == sizeof(short)   ? _interlockedadd16((short *)  (_v), (_i)) : \
++   sizeof *(_v) == sizeof(long)    ? _InterlockedExchangeAdd  ((long *)   (_v), (_i)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchangeAdd64((__int64 *)(_v), (_i)) : \
++                                     (assert(!"should not get here"), 0))
++#else
  #define p_atomic_add_return(_v, _i) (\
     sizeof *(_v) == sizeof(char)    ? _interlockedadd8 ((char *)   (_v), (_i)) : \
     sizeof *(_v) == sizeof(short)   ? _interlockedadd16((short *)  (_v), (_i)) : \
--   sizeof *(_v) == sizeof(long)    ? _interlockedadd  ((long *)   (_v), (_i)) : \
--   sizeof *(_v) == sizeof(__int64) ? _interlockedadd64((__int64 *)(_v), (_i)) : \
+    sizeof *(_v) == sizeof(long)    ? _interlockedadd  ((long *)   (_v), (_i)) : \
+    sizeof *(_v) == sizeof(__int64) ? _interlockedadd64((__int64 *)(_v), (_i)) : \
+                                      (assert(!"should not get here"), 0))
++#endif
+ 
++#ifdef _WIN32
++#define p_atomic_fetch_add(_v, _i) (\
++   sizeof *(_v) == sizeof(char)    ? _InterlockedExchangeAdd8 ((char *)   (_v), (_i)) : \
++   sizeof *(_v) == sizeof(short)   ? _InterlockedExchangeAdd16((short *)  (_v), (_i)) : \
 +   sizeof *(_v) == sizeof(long)    ? _InterlockedExchangeAdd  ((long *)   (_v), (_i)) : \
 +   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchangeAdd64((__int64 *)(_v), (_i)) : \
-                                      (assert(!"should not get here"), 0))
- 
++                                     (assert(!"should not get here"), 0))
++#else
  #define p_atomic_fetch_add(_v, _i) (\
     sizeof *(_v) == sizeof(char)    ? _InterlockedExchangeAdd8 ((char *)   (_v), (_i)) : \
     sizeof *(_v) == sizeof(short)   ? _InterlockedExchangeAdd16((short *)  (_v), (_i)) : \
     sizeof *(_v) == sizeof(long)    ? _InterlockedExchangeAdd  ((long *)   (_v), (_i)) : \
--   sizeof *(_v) == sizeof(__int64) ? _interlockedexchangeadd64((__int64 *)(_v), (_i)) : \
-+   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchangeAdd64((__int64 *)(_v), (_i)) : \
+    sizeof *(_v) == sizeof(__int64) ? _interlockedexchangeadd64((__int64 *)(_v), (_i)) : \
                                       (assert(!"should not get here"), 0))
++#endif
  
  #define p_atomic_cmpxchg(_v, _old, _new) (\
-@@ -197,7 +197,7 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+    sizeof *(_v) == sizeof(char)    ? _InterlockedCompareExchange8 ((char *)   (_v), (char)   (_new), (char)   (_old)) : \
+@@ -193,12 +229,21 @@ __forceinline short _interlockedadd16(short volatile * _Addend, short _Value)
+ #endif
+ 
+ #define PIPE_NATIVE_ATOMIC_XCHG
++#ifdef _WIN32
++#define p_atomic_xchg(_v, _new) (\
++   sizeof *(_v) == sizeof(char)    ? _InterlockedExchange8 ((char *)   (_v), (char)   (_new)) : \
++   sizeof *(_v) == sizeof(short)   ? _InterlockedExchange16((short *)  (_v), (short)  (_new)) : \
++   sizeof *(_v) == sizeof(long)    ? _InterlockedExchange  ((long *)   (_v), (long)   (_new)) : \
++   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchange64((__int64 *)(_v), (__int64)(_new)) : \
++                                     (assert(!"should not get here"), 0))
++#else
+ #define p_atomic_xchg(_v, _new) (\
     sizeof *(_v) == sizeof(char)    ? _InterlockedExchange8 ((char *)   (_v), (char)   (_new)) : \
     sizeof *(_v) == sizeof(short)   ? _InterlockedExchange16((short *)  (_v), (short)  (_new)) : \
     sizeof *(_v) == sizeof(long)    ? _InterlockedExchange  ((long *)   (_v), (long)   (_new)) : \
--   sizeof *(_v) == sizeof(__int64) ? _interlockedexchange64((__int64 *)(_v), (__int64)(_new)) : \
-+   sizeof *(_v) == sizeof(__int64) ? _InterlockedExchange64((__int64 *)(_v), (__int64)(_new)) : \
+    sizeof *(_v) == sizeof(__int64) ? _interlockedexchange64((__int64 *)(_v), (__int64)(_new)) : \
                                       (assert(!"should not get here"), 0))
++#endif
  
  #endif
+ 
 -- 
 2.38.1.windows.1
 

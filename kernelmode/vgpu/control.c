@@ -169,6 +169,12 @@ NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size
     NTSTATUS status = STATUS_UNSUCCESSFUL;
     ULONG64 *input = NULL, *output = NULL;
 
+    if (!Capsets.Initialized)
+    {
+        GetCapsInfo(Context);
+        Capsets.Initialized = TRUE;
+    }
+
     status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &input, bytesReturn);
     if (!NT_SUCCESS(status))
     {
@@ -201,6 +207,9 @@ NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size
         // get vgpu staging config
         VirtIOWdfDeviceGet(&Context->VDevice, FIELD_OFFSET(struct virtio_vgpu_config, staging), output, sizeof(UINT8));
         break;
+    case VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs:
+        *output = Capsets.CapsetIdMask;
+        break;
     default:
         if ((Context->Capabilities & (1LL << ((*input) - 1))))
         {
@@ -223,11 +232,6 @@ NTSTATUS CtlGetCaps(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t
     PVOID                           pCaps;
     struct drm_virtgpu_get_caps*    pGetCaps;
     INT32                           index = -1;
-
-    if (!Capsets.Initialized)
-    {
-        GetCapsInfo(Context);
-    }
 
     status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &pGetCaps, bytesReturn);
     if (!NT_SUCCESS(status))
@@ -274,9 +278,83 @@ NTSTATUS CtlGetCaps(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t
     return STATUS_SUCCESS;
 }
 
-NTSTATUS CtlCreateVirglContext(IN PDEVICE_CONTEXT Context, IN ULONG32 virglContextId)
+NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
-    PVIRGL_CONTEXT virglContext;
+    NTSTATUS        status;
+    PVIRGL_CONTEXT  virglContext;
+    WDFMEMORY       contextParamMem;
+    ULONG           contextInit = 0;
+    ULONG           contextId;
+    struct drm_virtgpu_context_init* init;
+    struct drm_virtgpu_context_set_param* params;
+
+    // use current process id as virgl context id
+    contextId = HandleToULong(PsGetCurrentProcessId());
+
+    virglContext = GetVirglContextFromList(contextId);
+    if (virglContext)
+    {
+        VGPU_DEBUG_PRINT("virgl context has already been initialized");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &init, bytesReturn);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_LOG("WdfRequestRetrieveInputBuffer failed status=0x%08x", status);
+        return status;
+    }
+
+    if (*bytesReturn != sizeof(struct drm_virtgpu_context_init))
+    {
+        VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)init->ctx_set_params, init->num_params * sizeof(struct drm_virtgpu_context_set_param), &contextParamMem);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_PRINT("WdfRequestProbeAndLockUserBufferForRead bohandles failed");
+        return status;
+    }
+
+    params = WdfMemoryGetBuffer(contextParamMem, NULL);
+    if (!params)
+    {
+        VGPU_DEBUG_PRINT("WdfMemoryGetBuffer failed");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    for (size_t i = 0; i < init->num_params; i++)
+    {
+        switch (params[i].param) {
+        case VIRTGPU_CONTEXT_PARAM_CAPSET_ID:
+            if (params[i].value > MAX_CAPSET_ID) 
+            {
+                status = STATUS_UNSUCCESSFUL;
+                break;
+            }
+            if ((Capsets.CapsetIdMask & (1LL << params[i].value)) == 0)
+            {
+                status = STATUS_UNSUCCESSFUL;
+                break;
+            }
+            contextInit |= params[i].value;
+            break;
+        case VIRTGPU_CONTEXT_PARAM_NUM_RINGS:
+        case VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK:
+        default:
+            VGPU_DEBUG_PRINT("unimplement features");
+            status = STATUS_UNSUCCESSFUL;
+            break;
+        }
+    }
+
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_PRINT("set context init param failed");
+        return status;
+    }
 
     virglContext = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(VIRGL_CONTEXT), VIRTIO_VGPU_MEMORY_TAG);
     if (virglContext == NULL)
@@ -286,17 +364,17 @@ NTSTATUS CtlCreateVirglContext(IN PDEVICE_CONTEXT Context, IN ULONG32 virglConte
     }
 
     // initialize virgl context
-    virglContext->Id = virglContextId;
+    virglContext->Id = contextId;
     virglContext->DeviceContext = Context;
     
     KeInitializeSpinLock(&virglContext->ResourceListSpinLock);
     InitializeListHead(&virglContext->ResourceList);
     ExInterlockedInsertTailList(&VirglContextList, &virglContext->Entry, &VirglContextListSpinLock);
     
-    CreateVirglContext(Context, virglContextId);
-    VGPU_DEBUG_LOG("create virgl context id=%d", virglContextId);
+    CreateVirglContext(Context, virglContext->Id, contextInit);
+    VGPU_DEBUG_LOG("create virgl context id=%d", contextId);
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext)
@@ -647,8 +725,8 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
 {
     NTSTATUS                        status;
     ULONG64                         fenceId;
-    WDFMEMORY                       commandBuf;
-    WDFMEMORY                       handlesBuf;
+    WDFMEMORY                       commandMem;
+    WDFMEMORY                       handlesMem;
     PVOID                           inFence = NULL;
     PVOID                           outFence = NULL;
     PVOID                           wdfCommandBuf;
@@ -672,14 +750,14 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         return STATUS_UNSUCCESSFUL;
     }
 
-    status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)cmd->command, cmd->size, &commandBuf);
+    status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)cmd->command, cmd->size, &commandMem);
     if (!NT_SUCCESS(status))
     {
         VGPU_DEBUG_LOG("WdfRequestProbeAndLockUserBufferForRead failed status=0x%08x", status);
         return status;
     }
 
-    wdfCommandBuf = WdfMemoryGetBuffer(commandBuf, NULL);
+    wdfCommandBuf = WdfMemoryGetBuffer(commandMem, NULL);
     if (!wdfCommandBuf)
     {
         VGPU_DEBUG_PRINT("WdfMemoryGetBuffer failed");
@@ -728,14 +806,14 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
     if (cmd->num_bo_handles > 0)
     {
         boHandlesSize = sizeof(ULONG32) * cmd->num_bo_handles;
-        status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)cmd->bo_handles, boHandlesSize, &handlesBuf);
+        status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)cmd->bo_handles, boHandlesSize, &handlesMem);
         if (!NT_SUCCESS(status))
         {
             VGPU_DEBUG_PRINT("WdfRequestProbeAndLockUserBufferForRead bohandles failed");
             return status;
         }
 
-        bohandles = WdfMemoryGetBuffer(handlesBuf, NULL);
+        bohandles = WdfMemoryGetBuffer(handlesMem, NULL);
         if (!bohandles)
         {
             VGPU_DEBUG_PRINT("WdfMemoryGetBuffer failed");
