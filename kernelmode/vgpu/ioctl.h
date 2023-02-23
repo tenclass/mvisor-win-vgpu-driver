@@ -137,12 +137,10 @@ struct drm_virtgpu_execbuffer {
     __u64 command; /* void* */
     __u64 bo_handles;
     __u32 num_bo_handles;
+    __u32 ring_idx; /* command ring index (see VIRTGPU_EXECBUF_RING_IDX) */
 
     HANDLE in_fence_fd;
     HANDLE out_fence_fd;
-
-    __u32 ring_idx; /* command ring index (see VIRTGPU_EXECBUF_RING_IDX) */
-    __u32 pad;
 };
 
 /* DRM_IOCTL_GEM_CLOSE ioctl argument type */

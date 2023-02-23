@@ -97,18 +97,6 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
         case VIRTIO_GPU_CMD_GET_CAPSET_INFO:
             KeSetEvent(&buffer->Event, IO_NO_INCREMENT, FALSE);
             break;
-        case VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
-        case VIRTIO_GPU_CMD_RESOURCE_CREATE_3D:
-        {
-            PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
-            if (virglContext)
-            {
-                struct virtio_gpu_resource_create_3d* create = (struct virtio_gpu_resource_create_3d*)buffer->pBuf;
-                SetResourceState(virglContext, &((ULONG32)create->resource_id), sizeof(ULONG32), FALSE, header->fence_id);
-            }
-            FreeCommandBuffer(Context, buffer);
-            break;
-        }
         case VIRTIO_GPU_CMD_SUBMIT_3D:
         {
             if (buffer->Extend != NULL)
@@ -134,6 +122,8 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             FreeCommandBuffer(Context, buffer);
             break;
         }
+        case VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
+        case VIRTIO_GPU_CMD_RESOURCE_CREATE_3D:
         case VIRTIO_GPU_CMD_RESOURCE_UNREF:
         case VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING:
         case VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING:

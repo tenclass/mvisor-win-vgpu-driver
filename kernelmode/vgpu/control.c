@@ -366,12 +366,11 @@ NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, 
     // initialize virgl context
     virglContext->Id = contextId;
     virglContext->DeviceContext = Context;
-    
     KeInitializeSpinLock(&virglContext->ResourceListSpinLock);
     InitializeListHead(&virglContext->ResourceList);
     ExInterlockedInsertTailList(&VirglContextList, &virglContext->Entry, &VirglContextListSpinLock);
     
-    CreateVirglContext(Context, virglContext->Id, contextInit);
+    CreateVirglContext(Context, contextId, contextInit);
     VGPU_DEBUG_LOG("create virgl context id=%d", contextId);
 
     return status;
@@ -469,13 +468,14 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
     create.nr_samples = pCreateResource->nr_samples;
 
     GetIdFromIdrWithoutCache(VIRGL_RESOURCE_ID_TYPE, &resource->Id, sizeof(ULONG32));
-    GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &resource->FenceId, sizeof(ULONG64));
+    resource->FenceId = 0;
 
     // init state event to false means the resource is busy now
-    KeInitializeEvent(&resource->StateEvent, NotificationEvent, FALSE);
+    // we make all resource as idle when created
+    KeInitializeEvent(&resource->StateEvent, NotificationEvent, TRUE);
 
     // treat all kind of resources as 3d resoures, they would be handled in virglrenderer
-    Create3DResource(virglContext->DeviceContext, virglContext->Id, resource->Id, &create, resource->FenceId);
+    Create3DResource(virglContext->DeviceContext, virglContext->Id, resource->Id, &create, 0);
 
     // VIRGL_CAP_COPY_TRANSFER set size=1 of resource without buffer
     resource->bForBuffer = pCreateResource->size != 1;
