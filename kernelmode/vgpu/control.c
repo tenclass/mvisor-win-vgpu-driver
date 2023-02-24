@@ -125,12 +125,14 @@ BOOLEAN CreateUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
     try {
         ShareMemory->UserAdderss = MmMapLockedPagesSpecifyCache(ShareMemory->pMdl, UserMode, MmNonCached, NULL, FALSE, NormalPagePriority);
     } except(EXCEPTION_EXECUTE_HANDLER) {
+        IoFreeMdl(ShareMemory->pMdl);
         VGPU_DEBUG_PRINT("except: create share memory with user failed");
         return FALSE;
     }
 
     if (!ShareMemory->UserAdderss)
     {
+        IoFreeMdl(ShareMemory->pMdl);
         return FALSE;
     }
 
@@ -713,6 +715,7 @@ NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t I
         }
         else
         {
+            resource->Buffer.Share.pMdl = NULL;
             VGPU_DEBUG_PRINT("create share memory failed");
             return STATUS_UNSUCCESSFUL;
         }
@@ -901,6 +904,7 @@ NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t Inp
     transfer3d.resource_id = resource->Id;
 
     GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &fenceId, sizeof(ULONG64));
+    SetResourceState(virglContext, &resource->Id, sizeof(ULONG32), TRUE, fenceId);
     TransferHost3D(virglContext->DeviceContext, virglContext->Id, &transfer3d, fenceId, ToHost);
 
     return status;

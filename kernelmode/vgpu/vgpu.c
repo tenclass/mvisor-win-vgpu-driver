@@ -119,7 +119,19 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             {
                 FreeVgpuMemory(buffer->pDataBuf);
             }
+
             FreeCommandBuffer(Context, buffer);
+            break;
+        }
+        case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D:
+        case VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D:
+        {
+            PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
+            if (virglContext)
+            {
+                struct virtio_gpu_transfer_host_3d* transfer = (struct virtio_gpu_transfer_host_3d*)buffer->pBuf;
+                SetResourceState(virglContext, &((ULONG32)transfer->resource_id), sizeof(ULONG32), FALSE, header->fence_id);
+            }
             break;
         }
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
@@ -132,8 +144,6 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
         case VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE:
         case VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE:
         case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D:
-        case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D:
-        case VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D:
             FreeCommandBuffer(Context, buffer);
             break;
         default:
