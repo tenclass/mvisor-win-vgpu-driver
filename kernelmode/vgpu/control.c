@@ -849,9 +849,8 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
 
     // copy user cmd buffer to vgpu memory
     RtlCopyMemory(vgpuMemory.VirtualAddress, wdfCommandBuf, cmd->size);
-    SubmitCommand(virglContext->DeviceContext, virglContext->Id, &vgpuMemory, cmd->size, extend, boHandlesSize, fenceId, outFence);
 
-    return status;
+    return SubmitCommand(virglContext->DeviceContext, virglContext->Id, &vgpuMemory, cmd->size, extend, boHandlesSize, fenceId, outFence);
 }
 
 NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)

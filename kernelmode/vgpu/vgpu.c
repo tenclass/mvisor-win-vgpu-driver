@@ -341,7 +341,8 @@ VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t Out
     {
         VGPU_DEBUG_LOG("io control failed status=0x%08x code=%d", status, IoControlCode);
     }
-    else if (status != STATUS_PENDING)
+
+    if (status != STATUS_PENDING)
     {
         WdfRequestCompleteWithInformation(Request, status, bytesReturn);
     }
@@ -544,6 +545,7 @@ NTSTATUS VirtioVgpuDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE 
     if (NT_SUCCESS(status))
     {
         VirtIOWdfSetDriverOK(&context->VDevice);
+        VGPU_DEBUG_LOG("init virtio queue index=0 size=%d", context->VirtQueues[0]->vdev->info->num);
     }
     else
     {

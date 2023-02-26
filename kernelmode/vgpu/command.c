@@ -23,7 +23,7 @@
 #define CONTROL_QUEUE 1
 
 
-VOID PushQueue(PDEVICE_CONTEXT Context,
+NTSTATUS PushQueue(PDEVICE_CONTEXT Context,
     ULONG32 QueueIndex,
     struct scatterlist sg[],
     unsigned int out_num,
@@ -32,18 +32,21 @@ VOID PushQueue(PDEVICE_CONTEXT Context,
     void* va_indirect,
     ULONGLONG phys_indirect)
 {
-    INT ret = -1;
+    int ret = -ENOSPC;
     WdfSpinLockAcquire(Context->VirtQueueLocks[QueueIndex]);
     ret = virtqueue_add_buf(Context->VirtQueues[QueueIndex], sg, out_num, in_num, opaque, va_indirect, phys_indirect);
     WdfSpinLockRelease(Context->VirtQueueLocks[QueueIndex]);
 
-    if (ret != 0)
+    if (ret == 0)
+    {
+        virtqueue_kick(Context->VirtQueues[QueueIndex]);
+        return STATUS_SUCCESS;
+    }
+    else
     {
         VGPU_DEBUG_LOG("virtqueue_add_buf failed ret=%d QueueIndex=%d", ret, QueueIndex);
-        return;
+        return STATUS_UNSUCCESSFUL;
     }
-
-    virtqueue_kick(Context->VirtQueues[QueueIndex]);
 }
 
 PVGPU_BUFFER AllocateCommandBuffer(PDEVICE_CONTEXT Context, size_t CmdSize, size_t RespSize, BOOLEAN bSync, WDFREQUEST Request)
@@ -407,7 +410,7 @@ VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Reso
     PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }
 
-VOID SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_DESCRIPTOR Command, SIZE_T Size,
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_DESCRIPTOR Command, SIZE_T Size,
     PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId, PVOID FenceObject)
 {
     UINT32 outNum;
@@ -436,5 +439,5 @@ VOID SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY
     sg[outNum].length = (ULONG32)Size;
     outNum++;
 
-    PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
+    return PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }

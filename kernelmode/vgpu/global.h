@@ -112,9 +112,9 @@ CAPSETS     Capsets;
 LIST_ENTRY  VirglContextList;
 KSPIN_LOCK  VirglContextListSpinLock;
 
-#define VGPU_DEBUG_TAG() KdPrint(("[Tenclass] Func:%s Line:%d \n", __FUNCTION__, __LINE__))
-#define VGPU_DEBUG_PRINT(string) KdPrint(("[Tenclass] Func:%s Line:%d " string "\n", __FUNCTION__, __LINE__))
-#define VGPU_DEBUG_LOG(fmt, ...) KdPrint(("[Tenclass] Func:%s Line:%d " fmt "\n", __FUNCTION__, __LINE__, __VA_ARGS__))
+#define VGPU_DEBUG_TAG() KdPrint(("[Mvisor] Func:%s Line:%d \n", __FUNCTION__, __LINE__))
+#define VGPU_DEBUG_PRINT(string) KdPrint(("[Mvisor] Func:%s Line:%d " string "\n", __FUNCTION__, __LINE__))
+#define VGPU_DEBUG_LOG(fmt, ...) KdPrint(("[Mvisor] Func:%s Line:%d " fmt "\n", __FUNCTION__, __LINE__, __VA_ARGS__))
 
 VOID SpinLock(KIRQL* Irql, PKSPIN_LOCK SpinLock);
 VOID SpinUnLock(KIRQL Irql, PKSPIN_LOCK SpinLock);

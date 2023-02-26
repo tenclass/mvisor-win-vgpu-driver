@@ -82,8 +82,8 @@ KmdfLibraryVersion = $KMDFVERSION$
 
 [Strings]
 SPSVCINST_ASSOCSERVICE= 0x00000002
-ManufacturerName="Tenclass" ;TODO: Replace with your manufacturer name
-ClassName="Tenclass Device" ; TODO: edit ClassName
+ManufacturerName="Mvisor" ;TODO: Replace with your manufacturer name
+ClassName="Mvisor Device" ; TODO: edit ClassName
 DiskName = "vgpu Installation Disk"
-vgpu.DeviceDesc = "Tenclass VGPU"
+vgpu.DeviceDesc = "Mvisor VGPU"
 vgpu.SVCDESC = "vgpu Service"
