@@ -104,7 +104,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
                 if (virglContext)
                 {
-                    SetResourceState(virglContext, buffer->Extend, buffer->ExtendSize, FALSE, header->fence_id);
+                    UpdateResourceState(virglContext, buffer->Extend, buffer->ExtendSize, FALSE, header->fence_id);
                 }
                 ExFreePoolWithTag(buffer->Extend, VIRTIO_VGPU_MEMORY_TAG);
             }
@@ -123,6 +123,19 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             FreeCommandBuffer(Context, buffer);
             break;
         }
+        case VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB:
+        {
+            PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
+            if (virglContext)
+            {
+                struct virtio_gpu_resource_map_blob* cmd = (struct virtio_gpu_resource_map_blob*)buffer->pRespBuf;
+                struct virtio_gpu_resp_map_info* resp = (struct virtio_gpu_resp_map_info*)buffer->pRespBuf;
+                //FIXME: how to use map_info ?
+                MapBlobResourceCallback(virglContext, cmd->resource_id, resp->gpa, resp->size);
+            }
+            FreeCommandBuffer(Context, buffer);
+            break;
+        }
         case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D:
         case VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D:
         {
@@ -130,12 +143,13 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             if (virglContext)
             {
                 struct virtio_gpu_transfer_host_3d* transfer = (struct virtio_gpu_transfer_host_3d*)buffer->pBuf;
-                SetResourceState(virglContext, &((ULONG32)transfer->resource_id), sizeof(ULONG32), FALSE, header->fence_id);
+                UpdateResourceState(virglContext, &((ULONG32)transfer->resource_id), sizeof(ULONG32), FALSE, header->fence_id);
             }
             break;
         }
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_3D:
+        case VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB:
         case VIRTIO_GPU_CMD_RESOURCE_UNREF:
         case VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING:
         case VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING:
@@ -144,6 +158,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
         case VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE:
         case VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE:
         case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D:
+        case VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB:
             FreeCommandBuffer(Context, buffer);
             break;
         default:
@@ -330,6 +345,9 @@ VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t Out
         break;
     case IOCTL_VIRTIO_VGPU_TRANSFER_TO_HOST:
         status = CtlTransferHost(TRUE, Request, InputBufferLength, &bytesReturn);
+        break;
+    case IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE:
+        status = CtlCreateBlobResource(Request, OutputBufferLength, InputBufferLength, &bytesReturn);
         break;
     default:
         status = STATUS_NOT_SUPPORTED;

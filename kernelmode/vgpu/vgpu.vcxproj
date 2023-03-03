@@ -131,6 +131,7 @@
     <LibraryPath>$(SolutionDir)..\lib\virtio\$(Platform)\;$(LibraryPath)</LibraryPath>
     <IncludePath>$(SolutionDir)..\include\virtio\;$(IncludePath)</IncludePath>
     <EnableInf2cat>true</EnableInf2cat>
+    <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>

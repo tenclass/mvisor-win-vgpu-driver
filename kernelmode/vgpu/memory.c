@@ -160,7 +160,7 @@ VOID FreeVgpuMemory(PVOID VitrualAddress)
 }
 
 
-BOOLEAN AllocateVgpuMemory(SIZE_T Size, PVGPU_MEMORY_DESCRIPTOR Memory)
+BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
 {
     KIRQL           savedIrql;
     PMEMORY_NODE    node;

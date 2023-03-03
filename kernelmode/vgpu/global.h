@@ -36,10 +36,10 @@ struct virtio_vgpu_config {
 };
 #pragma pack()
 
-typedef struct _VGPU_MEMORY_DESCRIPTOR {
+typedef struct _MEMORY_DESCRIPTOR {
     PVOID               VirtualAddress;
     PHYSICAL_ADDRESS    PhysicalAddress;
-}VGPU_MEMORY_DESCRIPTOR, * PVGPU_MEMORY_DESCRIPTOR;
+}MEMORY_DESCRIPTOR, * PMEMORY_DESCRIPTOR;
 
 typedef struct _VIRTIO_GPU_DRV_CAPSET {
     ULONG32 id;
@@ -76,7 +76,7 @@ typedef struct _SHARE_DESCRIPTOR {
 typedef struct _VIRGL_RESOURCE_BUFFER {
     SIZE_T				    Size;
     SHARE_DESCRIPTOR        Share;
-    VGPU_MEMORY_DESCRIPTOR  VgpuMemory;
+    MEMORY_DESCRIPTOR       Memory;
 }VIRGL_RESOURCE_BUFFER, * PVIRGL_RESOURCE_BUFFER;
 
 typedef struct _VIRGL_RESOURCE {
@@ -84,6 +84,7 @@ typedef struct _VIRGL_RESOURCE {
     KEVENT                  StateEvent;
     LIST_ENTRY			    Entry;
     BOOLEAN                 bForBuffer;
+    BOOLEAN                 bForBlob;
     ULONG64                 FenceId;
     VIRGL_RESOURCE_BUFFER   Buffer;
 }VIRGL_RESOURCE, * PVIRGL_RESOURCE;

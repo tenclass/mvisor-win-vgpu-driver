@@ -44,12 +44,12 @@ PVIRGL_CONTEXT GetVirglContextFromList(ULONG32 VirglContextId)
     return bFind ? virglContext : NULL;
 }
 
-PVIRGL_RESOURCE GetResourceFromListUnsafe(PVIRGL_CONTEXT virglContext, ULONG32 Id)
+PVIRGL_RESOURCE GetResourceFromListUnsafe(PVIRGL_CONTEXT VirglContext, ULONG32 Id)
 {
     PLIST_ENTRY     item = NULL;
     PVIRGL_RESOURCE resource = NULL;
 
-    for (item = virglContext->ResourceList.Flink; item != &virglContext->ResourceList; item = item->Flink)
+    for (item = VirglContext->ResourceList.Flink; item != &VirglContext->ResourceList; item = item->Flink)
     {
         resource = CONTAINING_RECORD(item, VIRGL_RESOURCE, Entry);
         if (resource->Id == Id)
@@ -61,49 +61,85 @@ PVIRGL_RESOURCE GetResourceFromListUnsafe(PVIRGL_CONTEXT virglContext, ULONG32 I
     return resource;
 }
 
-PVIRGL_RESOURCE GetResourceFromList(PVIRGL_CONTEXT virglContext, ULONG32 Id)
+PVIRGL_RESOURCE GetResourceFromList(PVIRGL_CONTEXT VirglContext, ULONG32 Id)
 {
     PVIRGL_RESOURCE resource = NULL;
     KIRQL           savedIrql;
 
-    SpinLock(&savedIrql, &virglContext->ResourceListSpinLock);
-    resource = GetResourceFromListUnsafe(virglContext, Id);
-    SpinUnLock(savedIrql, &virglContext->ResourceListSpinLock);
+    SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
+    resource = GetResourceFromListUnsafe(VirglContext, Id);
+    SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
 
     return resource;
 }
 
-VOID SetResourceState(PVIRGL_CONTEXT virglContext, ULONG32* Ids, SIZE_T IdsSize, BOOLEAN Busy, ULONG64 FenceId)
+VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, ULONG32* Ids, SIZE_T IdsSize, BOOLEAN Busy, ULONG64 FenceId)
 {
     PVIRGL_RESOURCE resource;
     KIRQL           savedIrql;
     SIZE_T          index;
     SIZE_T          count = IdsSize / sizeof(ULONG32);
+    BOOLEAN         bSignal;
 
-    SpinLock(&savedIrql, &virglContext->ResourceListSpinLock);
+    SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
     for (index = 0; index < count; index++)
     {
-        resource = GetResourceFromListUnsafe(virglContext, Ids[index]);
+        resource = GetResourceFromListUnsafe(VirglContext, Ids[index]);
         if (resource)
         {
-            if (Busy)
+            bSignal = FALSE;
+
+            if (FenceId == 0)
             {
-                if (FenceId > resource->FenceId)
-                {
-                    resource->FenceId = FenceId;
-                }
-                KeClearEvent(&resource->StateEvent);
+                bSignal = TRUE;
             }
-            else
+            else if (FenceId >= resource->FenceId)
             {
-                if (FenceId >= resource->FenceId)
+                resource->FenceId = FenceId;
+                bSignal = TRUE;
+            }
+
+            if (bSignal)
+            {
+                if (Busy)
+                {
+                    KeClearEvent(&resource->StateEvent);
+                }
+                else
                 {
                     KeSetEvent(&resource->StateEvent, 0, FALSE);
                 }
             }
         }
     }
-    SpinUnLock(savedIrql, &virglContext->ResourceListSpinLock);
+    SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
+}
+
+VOID MapBlobResourceCallback(PVIRGL_CONTEXT VirglContext, ULONG32 Id, ULONG64 Gpa, SIZE_T Size)
+{
+    PHYSICAL_ADDRESS    phyaddr;
+    PVIRGL_RESOURCE     resource;
+    KIRQL               savedIrql;
+    PVOID               mapAddress;
+
+    SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
+    resource = GetResourceFromListUnsafe(VirglContext, Id);
+    SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
+
+    if (resource)
+    {
+        phyaddr.QuadPart = Gpa;
+        mapAddress = MmMapIoSpaceEx(phyaddr, Size, PAGE_READWRITE | PAGE_NOCACHE);
+        if (!mapAddress)
+        {
+            VGPU_DEBUG_LOG("mapAddress failed Gpa=0x%llx", Gpa);
+            return;
+        }
+
+        resource->Buffer.Size = Size;
+        resource->Buffer.Memory.VirtualAddress = mapAddress;
+        KeSetEvent(&resource->StateEvent, 0, FALSE);
+    }
 }
 
 BOOLEAN CreateUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
@@ -120,10 +156,11 @@ BOOLEAN CreateUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
         VGPU_DEBUG_PRINT("IoAllocateMdl failed");
         return FALSE;
     }
+
     MmBuildMdlForNonPagedPool(ShareMemory->pMdl);
 
     try {
-        ShareMemory->UserAdderss = MmMapLockedPagesSpecifyCache(ShareMemory->pMdl, UserMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+        ShareMemory->UserAdderss = MmMapLockedPagesSpecifyCache(ShareMemory->pMdl, UserMode, MmCached, NULL, FALSE, NormalPagePriority);
     } except(EXCEPTION_EXECUTE_HANDLER) {
         IoFreeMdl(ShareMemory->pMdl);
         VGPU_DEBUG_PRINT("except: create share memory with user failed");
@@ -133,6 +170,7 @@ BOOLEAN CreateUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
     if (!ShareMemory->UserAdderss)
     {
         IoFreeMdl(ShareMemory->pMdl);
+        VGPU_DEBUG_PRINT("MmMapLockedPagesSpecifyCache failed");
         return FALSE;
     }
 
@@ -151,19 +189,28 @@ VOID DeleteUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
     IoFreeMdl(ShareMemory->pMdl);
 }
 
-VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE resource)
+VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE Resource)
 {
-    if (resource->bForBuffer)
+    if (Resource->bForBuffer)
     {
-        DetachResourceBacking(VirglContext->DeviceContext, resource);
-        if (resource->Buffer.Share.pMdl)
+        if (Resource->Buffer.Share.pMdl)
         {
-            DeleteUserShareMemory(&resource->Buffer.Share);
+            DeleteUserShareMemory(&Resource->Buffer.Share);
         }
-        FreeVgpuMemory(resource->Buffer.VgpuMemory.VirtualAddress);
+
+        if (Resource->bForBlob)
+        {
+            UnMapBlobResource(VirglContext->DeviceContext, VirglContext->Id, Resource->Id, 0);
+            MmUnmapIoSpace(Resource->Buffer.Memory.VirtualAddress, Resource->Buffer.Size);
+        }
+        else
+        {
+            DetachResourceBacking(VirglContext->DeviceContext, Resource);
+            FreeVgpuMemory(Resource->Buffer.Memory.VirtualAddress);
+        }
     }
 
-    UnrefResource(VirglContext->DeviceContext, VirglContext->Id, resource->Id);
+    UnrefResource(VirglContext->DeviceContext, VirglContext->Id, Resource->Id);
 }
 
 NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
@@ -223,7 +270,6 @@ NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size
         }
         break;
     }
-    VGPU_DEBUG_LOG("param=%lld result=%lld", *input, *output);
 
     return status;
 }
@@ -481,6 +527,7 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
 
     // VIRGL_CAP_COPY_TRANSFER set size=1 of resource without buffer
     resource->bForBuffer = pCreateResource->size != 1;
+    resource->bForBlob = FALSE;
 
     if (resource->bForBuffer)
     {
@@ -496,24 +543,112 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
             resource->Buffer.Size = ROUND_UP(pCreateResource->size, PAGE_SIZE);
         }
 
-        if (!AllocateVgpuMemory(resource->Buffer.Size, &resource->Buffer.VgpuMemory))
+        if (!AllocateVgpuMemory(resource->Buffer.Size, &resource->Buffer.Memory))
         {
             VGPU_DEBUG_PRINT("allocate dma memory failed");
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
         // clear memory to avoid crash in cinema4d sometime
-        RtlZeroMemory(resource->Buffer.VgpuMemory.VirtualAddress, resource->Buffer.Size);
+        RtlZeroMemory(resource->Buffer.Memory.VirtualAddress, resource->Buffer.Size);
         AttachResourceBacking(virglContext->DeviceContext, virglContext->Id, resource);
     }
 
     // insert to the resource list
     ExInterlockedInsertTailList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
-    VGPU_DEBUG_LOG("create resource id=%d bForBuffer=%d size=%d", resource->Id, resource->bForBuffer, pCreateResource->size);
     
     // different from gem object in linux
     pCreateResourceResp->res_handle = pCreateResourceResp->bo_handle = resource->Id;
+    VGPU_DEBUG_LOG("create resource id=%d bForBuffer=%d size=%d", resource->Id, resource->bForBuffer, pCreateResource->size);
+
     return status;
+}
+
+NTSTATUS CtlCreateBlobResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
+{
+    NTSTATUS                            status;
+    PVIRGL_RESOURCE                     resource;
+    PVIRGL_CONTEXT                      virglContext;
+    VIRTGPU_BLOB_RESOURCE_CREATE_PARAM  create;
+    struct drm_virtgpu_resource_create_blob* pCreateResourceBlob;
+    struct drm_virtgpu_resource_create_resp* pCreateResourceResp;
+
+    status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &pCreateResourceBlob, bytesReturn);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_LOG("WdfRequestRetrieveInputBuffer failed status=0x%08x", status);
+        return status;
+    }
+
+    if (*bytesReturn != sizeof(struct drm_virtgpu_resource_create_blob))
+    {
+        VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = WdfRequestRetrieveOutputBuffer(Request, OutputBufferLength, &pCreateResourceResp, bytesReturn);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_LOG("WdfRequestRetrieveOutputBuffer failed status=0x%08x", status);
+        return status;
+    }
+
+    if (*bytesReturn != sizeof(struct drm_virtgpu_resource_create_resp))
+    {
+        VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    if (!virglContext)
+    {
+        VGPU_DEBUG_PRINT("get virgl context failed");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    resource = ExAllocateFromLookasideListEx(&virglContext->DeviceContext->VirglResourceLookAsideList);
+    if (resource == NULL)
+    {
+        VGPU_DEBUG_PRINT("allocate memory failed");
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    resource->bForBlob = TRUE;
+    resource->bForBuffer = TRUE;
+    resource->Buffer.Share.pMdl = NULL;
+    resource->FenceId = 0;
+    GetIdFromIdrWithoutCache(VIRGL_RESOURCE_ID_TYPE, &resource->Id, sizeof(ULONG32));
+
+    // initialize blob resource as busy until map blob callback was completed
+    KeInitializeEvent(&resource->StateEvent, NotificationEvent, FALSE);
+
+    create.nr_entries = 0;
+    create.blob_flags = pCreateResourceBlob->blob_flags;
+    create.blob_id = pCreateResourceBlob->blob_id;
+    create.blob_mem = pCreateResourceBlob->blob_mem;
+    create.size = ROUND_UP(pCreateResourceBlob->size, PAGE_SIZE);
+    create.format = pCreateResourceBlob->format;
+    create.bind = pCreateResourceBlob->bind;
+    create.target = pCreateResourceBlob->target;
+    create.width = pCreateResourceBlob->width;
+    create.height = pCreateResourceBlob->height;
+    create.depth = pCreateResourceBlob->depth;
+    create.array_size = pCreateResourceBlob->array_size;
+    create.last_level = pCreateResourceBlob->last_level;
+    create.nr_samples = pCreateResourceBlob->nr_samples;
+    create.flags = pCreateResourceBlob->flags;
+    CreateBlobResource(virglContext->DeviceContext, virglContext->Id, resource->Id, &create, 0);
+
+    // insert into resource list before map it
+    ExInterlockedInsertTailList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
+
+    // map blob resource
+    MapBlobResource(virglContext->DeviceContext, virglContext->Id, resource->Id, 0);
+
+    pCreateResourceResp->res_handle = pCreateResourceResp->bo_handle = resource->Id;
+    VGPU_DEBUG_LOG("create blob resource id=%d size=%d", resource->Id, pCreateResourceBlob->size);
+
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS CtlCloseResource(IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
@@ -629,9 +764,7 @@ NTSTATUS CtlWait(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t 
     }
     else
     {
-        LARGE_INTEGER timeout;
-        timeout.QuadPart = (-10 * 1000 * 1000); // 1s
-        status = KeWaitForSingleObject(&resource->StateEvent, Executive, KernelMode, FALSE, &timeout);
+        status = KeWaitForSingleObject(&resource->StateEvent, Executive, KernelMode, FALSE, NULL);
         if (NT_SUCCESS(status))
         {
             *result = 0;
@@ -707,7 +840,13 @@ NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t I
     }
     else
     {
-        resource->Buffer.Share.KennelAddress = resource->Buffer.VgpuMemory.VirtualAddress;
+        // wait for resource to be idle
+        if (!KeReadStateEvent(&resource->StateEvent))
+        {
+            KeWaitForSingleObject(&resource->StateEvent, Executive, KernelMode, FALSE, NULL);
+        }
+
+        resource->Buffer.Share.KennelAddress = resource->Buffer.Memory.VirtualAddress;
         resource->Buffer.Share.Size = resource->Buffer.Size;
         if (CreateUserShareMemory(&resource->Buffer.Share))
         {
@@ -736,7 +875,7 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
     PVOID                           extend = NULL;
     ULONG32*                        bohandles;
     SIZE_T                          boHandlesSize = 0;
-    VGPU_MEMORY_DESCRIPTOR          vgpuMemory;
+    MEMORY_DESCRIPTOR               vgpuMemory;
     PVIRGL_CONTEXT                  virglContext;
     struct drm_virtgpu_execbuffer*  cmd;
 
@@ -824,7 +963,7 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         }
 
         // make all resources referenced busy
-        SetResourceState(virglContext, bohandles, boHandlesSize, TRUE, fenceId);
+        UpdateResourceState(virglContext, bohandles, boHandlesSize, TRUE, fenceId);
 
         // backup these handles to make them idle later
         extend = ExAllocatePool2(POOL_FLAG_NON_PAGED | POOL_FLAG_UNINITIALIZED, boHandlesSize, VIRTIO_VGPU_MEMORY_TAG);
@@ -856,7 +995,6 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
 NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
     NTSTATUS                        status;
-    ULONG64                         fenceId;
     PVIRGL_CONTEXT                  virglContext;
     PVIRGL_RESOURCE                 resource;
     struct drm_virtgpu_3d_transfer* cmd;
@@ -902,9 +1040,8 @@ NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t Inp
     transfer3d.stride = cmd->stride;
     transfer3d.resource_id = resource->Id;
 
-    GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &fenceId, sizeof(ULONG64));
-    SetResourceState(virglContext, &resource->Id, sizeof(ULONG32), TRUE, fenceId);
-    TransferHost3D(virglContext->DeviceContext, virglContext->Id, &transfer3d, fenceId, ToHost);
+    UpdateResourceState(virglContext, &resource->Id, sizeof(ULONG32), TRUE, 0);
+    TransferHost3D(virglContext->DeviceContext, virglContext->Id, &transfer3d, 0, ToHost);
 
     return status;
 }

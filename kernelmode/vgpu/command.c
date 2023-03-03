@@ -322,6 +322,94 @@ VOID Create3DResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 R
     PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }
 
+VOID CreateBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_BLOB_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId)
+{
+    struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
+    UINT32 outNum;
+
+    PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_resource_create_3d), 0, FALSE, NULL);
+    struct virtio_gpu_resource_create_blob* cmd = buffer->pBuf;
+
+    cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;
+    cmd->hdr.ctx_id = VirglContextId;
+    cmd->resource_id = ResourceId;
+
+    cmd->blob_mem = Create->blob_mem;
+    cmd->blob_flags = Create->blob_flags;
+    cmd->blob_id = Create->blob_id;
+    cmd->size = Create->size;
+    cmd->nr_entries = Create->nr_entries;
+
+    cmd->format = Create->format;
+    cmd->bind = Create->bind;
+    cmd->target = Create->target;
+    cmd->width = Create->width;
+    cmd->height = Create->height;
+    cmd->depth = Create->depth;
+    cmd->array_size = Create->array_size;
+    cmd->last_level = Create->last_level;
+    cmd->nr_samples = Create->nr_samples;
+    cmd->flags = Create->flags;
+
+    if (FenceId > 0)
+    {
+        cmd->hdr.flags |= VIRTIO_GPU_FLAG_FENCE;
+        cmd->hdr.fence_id = FenceId;
+    }
+
+    outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
+
+    PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
+}
+
+VOID MapBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, ULONG64 FenceId)
+{
+    struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
+    UINT32 outNum, inNum;
+
+    PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_resource_map_blob), sizeof(struct virtio_gpu_resp_map_info), FALSE, NULL);
+    struct virtio_gpu_resource_map_blob* cmd = buffer->pBuf;
+    struct virtio_gpu_resp_map_info* resp = buffer->pRespBuf;
+
+    cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB;
+    cmd->hdr.ctx_id = VirglContextId;
+    cmd->resource_id = ResourceId;
+
+    if (FenceId > 0)
+    {
+        cmd->hdr.flags |= VIRTIO_GPU_FLAG_FENCE;
+        cmd->hdr.fence_id = FenceId;
+    }
+
+    outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
+    inNum = BuildSGElement(&sg[outNum], SGLIST_SIZE - outNum, (PUINT8)resp, sizeof(*resp));
+
+    PushQueue(Context, COMMAND_QUEUE, sg, outNum, inNum, buffer, NULL, 0);
+}
+
+VOID UnMapBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, ULONG64 FenceId)
+{
+    struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
+    UINT32 outNum;
+
+    PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_resource_unmap_blob), 0, FALSE, NULL);
+    struct virtio_gpu_resource_unmap_blob* cmd = buffer->pBuf;
+
+    cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB;
+    cmd->hdr.ctx_id = VirglContextId;
+    cmd->resource_id = ResourceId;
+
+    if (FenceId > 0)
+    {
+        cmd->hdr.flags |= VIRTIO_GPU_FLAG_FENCE;
+        cmd->hdr.fence_id = FenceId;
+    }
+
+    outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
+
+    PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
+}
+
 VOID AttachResourceBacking(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRGL_RESOURCE Resource)
 {
     struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
@@ -335,7 +423,7 @@ VOID AttachResourceBacking(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIR
     cmd->resource_id = Resource->Id;
 
     // resource use contiguous physical memory from vgpu memory
-    cmd->gpa = Resource->Buffer.VgpuMemory.PhysicalAddress.QuadPart;
+    cmd->gpa = Resource->Buffer.Memory.PhysicalAddress.QuadPart;
     cmd->size = (ULONG32)Resource->Buffer.Size;
 
     outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
@@ -410,7 +498,7 @@ VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Reso
     PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }
 
-NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_DESCRIPTOR Command, SIZE_T Size,
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_DESCRIPTOR Command, SIZE_T Size,
     PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId, PVOID FenceObject)
 {
     UINT32 outNum;

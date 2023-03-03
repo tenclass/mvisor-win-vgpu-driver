@@ -38,6 +38,9 @@ enum virtio_gpu_ctrl_type {
     VIRTIO_GPU_CMD_GET_CAPSET_INFO,
     VIRTIO_GPU_CMD_GET_CAPSET,
     VIRTIO_GPU_CMD_GET_EDID,
+    VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB,
+    VIRTIO_GPU_CMD_SET_SCANOUT_BLOB,
 
     /* 3d commands */
     VIRTIO_GPU_CMD_CTX_CREATE = 0x0200,
@@ -48,6 +51,8 @@ enum virtio_gpu_ctrl_type {
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
     VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
     VIRTIO_GPU_CMD_SUBMIT_3D,
+    VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB,
+    VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB,
 
     /* cursor commands */
     VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300,
@@ -59,7 +64,8 @@ enum virtio_gpu_ctrl_type {
     VIRTIO_GPU_RESP_OK_CAPSET_INFO,
     VIRTIO_GPU_RESP_OK_CAPSET,
     VIRTIO_GPU_RESP_OK_EDID,
-
+    VIRTIO_GPU_RESP_OK_RESOURCE_UUID,
+    VIRTIO_GPU_RESP_OK_MAP_INFO,
 
     /* error responses */
     VIRTIO_GPU_RESP_ERR_UNSPEC = 0x1200,
@@ -123,6 +129,65 @@ struct virtio_gpu_resource_create_3d {
     __le32 last_level;
     __le32 nr_samples;
     __le32 flags;
+    __le32 padding;
+};
+
+/* VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB */
+struct virtio_gpu_resource_create_blob {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __le32 resource_id;
+#define VIRTIO_GPU_BLOB_MEM_GUEST             0x0001
+#define VIRTIO_GPU_BLOB_MEM_HOST3D            0x0002
+#define VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST      0x0003
+
+#define VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE     0x0001
+#define VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE    0x0002
+#define VIRTIO_GPU_BLOB_FLAG_USE_CROSS_DEVICE 0x0004
+    /* zero is invalid blob mem */
+    __le32 blob_mem;
+    __le32 blob_flags;
+    __le32 nr_entries;
+    __le64 blob_id;
+    __le64 size;
+
+    // cmd
+    __le32 format;
+    __le32 bind;
+    __le32 target;
+    __le32 width;
+    __le32 height;
+    __le32 depth;
+    __le32 array_size;
+    __le32 last_level;
+    __le32 nr_samples;
+    __le32 flags;
+};
+
+/* VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB */
+struct virtio_gpu_resource_map_blob {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __le32 resource_id;
+    __le32 padding;
+};
+
+/* VIRTIO_GPU_RESP_OK_MAP_INFO */
+#define VIRTIO_GPU_MAP_CACHE_MASK     0x0f
+#define VIRTIO_GPU_MAP_CACHE_NONE     0x00
+#define VIRTIO_GPU_MAP_CACHE_CACHED   0x01
+#define VIRTIO_GPU_MAP_CACHE_UNCACHED 0x02
+#define VIRTIO_GPU_MAP_CACHE_WC       0x03
+struct virtio_gpu_resp_map_info {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __u32 map_info;
+    __le64 gpa;
+    __le64 size;
+    __u32 padding;
+};
+
+/* VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB */
+struct virtio_gpu_resource_unmap_blob {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __le32 resource_id;
     __le32 padding;
 };
 
@@ -244,6 +309,26 @@ typedef struct _VIRTGPU_RESOURCE_CREATE_PARAM {
     __u32 flags;
 }VIRTGPU_RESOURCE_CREATE_PARAM, * PVIRTGPU_RESOURCE_CREATE_PARAM;
 
+typedef struct _VIRTGPU_BLOB_RESOURCE_CREATE_PARAM {
+    __le32 blob_mem;
+    __le32 blob_flags;
+    __le32 nr_entries;
+    __le64 blob_id;
+    __le64 size;
+
+    /* from cmd */
+    __le32 format;
+    __le32 bind;
+    __le32 target;
+    __le32 width;
+    __le32 height;
+    __le32 depth;
+    __le32 array_size;
+    __le32 last_level;
+    __le32 nr_samples;
+    __le32 flags;
+}VIRTGPU_BLOB_RESOURCE_CREATE_PARAM, * PVIRTGPU_BLOB_RESOURCE_CREATE_PARAM;
+
 typedef struct _VIRTGPU_TRANSFER_HOST_2D_PARAM {
     struct virtio_gpu_rect r;
     __le64 offset;
@@ -266,6 +351,9 @@ VOID DestroyVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId);
 VOID FreeCommandBuffer(PDEVICE_CONTEXT Context, PVGPU_BUFFER pBuffer);
 VOID Create2DResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);
 VOID Create3DResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);
+VOID CreateBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_BLOB_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);
+VOID MapBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, ULONG64 FenceId);
+VOID UnMapBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, ULONG64 FenceId);
 VOID AttachResourceBacking(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRGL_RESOURCE Resource);
 VOID DetachResourceBacking(PDEVICE_CONTEXT Context, PVIRGL_RESOURCE Resource);
 VOID AttachResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId);
@@ -273,5 +361,5 @@ VOID DetachResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Res
 VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId);
 VOID TransferToHost2D(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRTGPU_TRANSFER_HOST_2D_PARAM Transfer);
 VOID TransferHost3D(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRTGPU_TRANSFER_HOST_3D_PARAM Transfer, ULONG64 FenceId, BOOLEAN ToHost);
-NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_DESCRIPTOR Command, SIZE_T Size,
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_DESCRIPTOR Command, SIZE_T Size,
     PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId, PVOID FenceObject);

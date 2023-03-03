@@ -79,6 +79,11 @@ DEFINE_GUID(GUID_DEVINTERFACE_VGPU, 0x31c22912, 0x7210, 0x11ed, 0xbf, 0x22, 0xbc
     METHOD_OUT_DIRECT, \
     FILE_ANY_ACCESS)
 
+#define IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE CTL_CODE(FILE_DEVICE_UNKNOWN, \
+    0x811, \
+    METHOD_OUT_DIRECT, \
+    FILE_ANY_ACCESS)
+
 #define VIRTGPU_PARAM_3D_FEATURES           1 /* do we have 3D features in the hw */
 #define VIRTGPU_PARAM_CAPSET_QUERY_FIX      2 /* do we have the capset fix */
 #define VIRTGPU_PARAM_RESOURCE_BLOB         3 /* DRM_VIRTGPU_RESOURCE_CREATE_BLOB */
@@ -129,6 +134,35 @@ struct drm_virtgpu_resource_create {
 struct drm_virtgpu_resource_create_resp {
     __u32 bo_handle; /* if this is set - recreate a new resource attached to this bo ? */
     __u32 res_handle;  /* returned by kernel */
+};
+
+struct drm_virtgpu_resource_create_blob {
+#define VIRTGPU_BLOB_MEM_GUEST             0x0001
+#define VIRTGPU_BLOB_MEM_HOST3D            0x0002
+#define VIRTGPU_BLOB_MEM_HOST3D_GUEST      0x0003
+
+#define VIRTGPU_BLOB_FLAG_USE_MAPPABLE     0x0001
+#define VIRTGPU_BLOB_FLAG_USE_SHAREABLE    0x0002
+#define VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE 0x0004
+    /* zero is invalid blob_mem */
+    __u32 blob_mem;
+    __u32 blob_flags;
+    __u32 bo_handle;
+    __u32 res_handle;
+    __u64 size;
+    __u64 blob_id;
+
+    /* from cmd */
+    __u32 format;
+    __u32 bind;
+    __u32 target;
+    __u32 width;
+    __u32 height;
+    __u32 depth;
+    __u32 array_size;
+    __u32 last_level;
+    __u32 nr_samples;
+    __u32 flags;
 };
 
 struct drm_virtgpu_execbuffer {

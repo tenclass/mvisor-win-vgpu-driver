@@ -22,4 +22,4 @@
 VOID InitializeVgpuMemory(PVOID VitrualAddress, PHYSICAL_ADDRESS PhysicalAddress, SIZE_T Size);
 VOID UninitializeVgpuMemory();
 VOID FreeVgpuMemory(PVOID VitrualAddress);
-BOOLEAN AllocateVgpuMemory(SIZE_T Size, PVGPU_MEMORY_DESCRIPTOR Memory);
+BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory);
