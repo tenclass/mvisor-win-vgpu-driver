@@ -21,7 +21,7 @@
 #include <WDF/VirtIOWdf.h>
 #include <stdarg.h>
 
-#define SGLIST_SIZE             64
+#define SGLIST_SIZE             4
 #define MAX_INTERRUPT_COUNT     4
 #define VIRTIO_VGPU_MEMORY_TAG  ((ULONG)'upgV')
 #define ROUND_UP(x, n)          (((x) + (n) - 1) & (-(n)))

@@ -85,14 +85,14 @@ VOID FreeCommandBuffer(PDEVICE_CONTEXT Context, PVGPU_BUFFER Buffer)
     ExFreeToLookasideListEx(&Context->VgpuBufferLookAsideList, Buffer);
 }
 
-UINT32 BuildSGElement(struct VirtIOBufferDescriptor* pSgList, size_t MaxSgCount, PUINT8 pBuf, size_t Size)
+UINT32 BuildSGElement(struct VirtIOBufferDescriptor* pSgList, SIZE_T MaxSgCount, PUINT8 pBuf, SIZE_T Size)
 {
-    ULONG32 length;
-    UINT32 sgCount = 0;
+    ULONG   length;
+    UINT32  sgCount = 0;
 
     while (Size)
     {
-        if (sgCount >= MaxSgCount)
+        if (sgCount > MaxSgCount)
         {
             VGPU_DEBUG_PRINT("sg overflow");
             return 0;
@@ -327,7 +327,7 @@ VOID CreateBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32
     struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
     UINT32 outNum;
 
-    PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_resource_create_3d), 0, FALSE, NULL);
+    PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_resource_create_blob), 0, FALSE, NULL);
     struct virtio_gpu_resource_create_blob* cmd = buffer->pBuf;
 
     cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;

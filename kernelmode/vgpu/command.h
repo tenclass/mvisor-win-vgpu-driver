@@ -76,9 +76,8 @@ enum virtio_gpu_ctrl_type {
     VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
 };
 
-// make 1byte alignment to communicate with host
-#pragma pack(push)
-#pragma pack(1)
+#pragma pack (push)
+#pragma pack (1)
 
 struct virtio_gpu_ctrl_hdr {
     __le32 type;
@@ -132,65 +131,6 @@ struct virtio_gpu_resource_create_3d {
     __le32 padding;
 };
 
-/* VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB */
-struct virtio_gpu_resource_create_blob {
-    struct virtio_gpu_ctrl_hdr hdr;
-    __le32 resource_id;
-#define VIRTIO_GPU_BLOB_MEM_GUEST             0x0001
-#define VIRTIO_GPU_BLOB_MEM_HOST3D            0x0002
-#define VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST      0x0003
-
-#define VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE     0x0001
-#define VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE    0x0002
-#define VIRTIO_GPU_BLOB_FLAG_USE_CROSS_DEVICE 0x0004
-    /* zero is invalid blob mem */
-    __le32 blob_mem;
-    __le32 blob_flags;
-    __le32 nr_entries;
-    __le64 blob_id;
-    __le64 size;
-
-    // cmd
-    __le32 format;
-    __le32 bind;
-    __le32 target;
-    __le32 width;
-    __le32 height;
-    __le32 depth;
-    __le32 array_size;
-    __le32 last_level;
-    __le32 nr_samples;
-    __le32 flags;
-};
-
-/* VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB */
-struct virtio_gpu_resource_map_blob {
-    struct virtio_gpu_ctrl_hdr hdr;
-    __le32 resource_id;
-    __le32 padding;
-};
-
-/* VIRTIO_GPU_RESP_OK_MAP_INFO */
-#define VIRTIO_GPU_MAP_CACHE_MASK     0x0f
-#define VIRTIO_GPU_MAP_CACHE_NONE     0x00
-#define VIRTIO_GPU_MAP_CACHE_CACHED   0x01
-#define VIRTIO_GPU_MAP_CACHE_UNCACHED 0x02
-#define VIRTIO_GPU_MAP_CACHE_WC       0x03
-struct virtio_gpu_resp_map_info {
-    struct virtio_gpu_ctrl_hdr hdr;
-    __u32 map_info;
-    __le64 gpa;
-    __le64 size;
-    __u32 padding;
-};
-
-/* VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB */
-struct virtio_gpu_resource_unmap_blob {
-    struct virtio_gpu_ctrl_hdr hdr;
-    __le32 resource_id;
-    __le32 padding;
-};
-
 /* VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: create a 2d resource with a format */
 struct virtio_gpu_resource_create_2d {
     struct virtio_gpu_ctrl_hdr hdr;
@@ -205,9 +145,6 @@ struct virtio_gpu_resource_attach_backing {
     struct virtio_gpu_ctrl_hdr hdr;
     __le32 resource_id;
     __le32 nr_entries;
-
-
-    // for migration
     __le64 gpa;
     __le32 size;
 };
@@ -245,8 +182,8 @@ struct virtio_gpu_get_capset {
     __le32 capset_version;
 };
 
-#pragma warning(disable:4200)
 /* VIRTIO_GPU_RESP_OK_CAPSET */
+#pragma warning(disable:4200)
 struct virtio_gpu_resp_capset {
     struct virtio_gpu_ctrl_hdr hdr;
     __u8 capset_data[];
@@ -291,9 +228,66 @@ struct virtio_gpu_cmd_submit {
     __le32 padding;
 };
 
-// pop back alignment
-#pragma pack(pop)
+/* VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB */
+struct virtio_gpu_resource_create_blob {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __le32 resource_id;
+#define VIRTIO_GPU_BLOB_MEM_GUEST             0x0001
+#define VIRTIO_GPU_BLOB_MEM_HOST3D            0x0002
+#define VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST      0x0003
 
+#define VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE     0x0001
+#define VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE    0x0002
+#define VIRTIO_GPU_BLOB_FLAG_USE_CROSS_DEVICE 0x0004
+    /* zero is invalid blob mem */
+    __le32 blob_mem;
+    __le32 blob_flags;
+    __le32 nr_entries;
+    __le64 blob_id;
+    __le64 size;
+
+    /* from cmd */
+    __le32 format;
+    __le32 bind;
+    __le32 target;
+    __le32 width;
+    __le32 height;
+    __le32 depth;
+    __le32 array_size;
+    __le32 last_level;
+    __le32 nr_samples;
+    __le32 flags;
+};
+
+/* VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB */
+struct virtio_gpu_resource_map_blob {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __le32 resource_id;
+    __le32 padding;
+};
+
+/* VIRTIO_GPU_RESP_OK_MAP_INFO */
+#define VIRTIO_GPU_MAP_CACHE_MASK     0x0f
+#define VIRTIO_GPU_MAP_CACHE_NONE     0x00
+#define VIRTIO_GPU_MAP_CACHE_CACHED   0x01
+#define VIRTIO_GPU_MAP_CACHE_UNCACHED 0x02
+#define VIRTIO_GPU_MAP_CACHE_WC       0x03
+struct virtio_gpu_resp_map_info {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __u32 map_info;
+    __le64 gpa;
+    __le64 size;
+    __u32 padding;
+};
+
+/* VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB */
+struct virtio_gpu_resource_unmap_blob {
+    struct virtio_gpu_ctrl_hdr hdr;
+    __le32 resource_id;
+    __le32 padding;
+};
+
+#pragma pack (pop)
 
 /* local use */
 typedef struct _VIRTGPU_RESOURCE_CREATE_PARAM {
