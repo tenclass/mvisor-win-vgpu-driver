@@ -30,9 +30,9 @@ typedef struct _IDRANDOM {
     LOOKASIDE_LIST_EX       LookAsideList;
 }IDRANDOM, * PIDRANDOM;
 
-#define VIRGL_RESOURCE_ID_TYPE  0
-#define FENCE_ID_TYPE           1
-#define IDR_MAX_SIZE            2
+#define VIRGL_RESOURCE_ID_TYPE      0
+#define FENCE_ID_TYPE               1
+#define IDR_MAX_SIZE                2
 
 VOID InitializeIdr();
 VOID UnInitializeIdr();

@@ -355,5 +355,5 @@ VOID DetachResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Res
 VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId);
 VOID TransferToHost2D(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRTGPU_TRANSFER_HOST_2D_PARAM Transfer);
 VOID TransferHost3D(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRTGPU_TRANSFER_HOST_3D_PARAM Transfer, ULONG64 FenceId, BOOLEAN ToHost);
-NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_DESCRIPTOR Command, SIZE_T Size,
-    PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId, PVOID FenceObject);
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_NODE Command, SIZE_T Size,
+    PVOID ResourceIds, SIZE_T ResourceIdsCount, ULONG64 FenceId, PVOID FenceObject);

@@ -45,34 +45,6 @@ VOID ProcessNotify(IN HANDLE ParentId, IN HANDLE ProcessId, IN BOOLEAN Create)
     }
 }
 
-VOID SpinLock(KIRQL* Irql, PKSPIN_LOCK SpinLock)
-{
-    KIRQL savedIrql = KeGetCurrentIrql();
-
-    if (savedIrql < DISPATCH_LEVEL) 
-    {
-        KeAcquireSpinLock(SpinLock, &savedIrql);
-    }
-    else
-    {
-        KeAcquireSpinLockAtDpcLevel(SpinLock);
-    }
-
-    *Irql = savedIrql;
-}
-
-VOID SpinUnLock(KIRQL Irql, PKSPIN_LOCK SpinLock)
-{
-    if (Irql < DISPATCH_LEVEL) 
-    {
-        KeReleaseSpinLock(SpinLock, Irql);
-    }
-    else 
-    {
-        KeReleaseSpinLockFromDpcLevel(SpinLock);
-    }
-}
-
 VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQueue, WDFSPINLOCK vqLock)
 {
     UINT32                      length;
@@ -82,11 +54,11 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
     while (TRUE)
     {
         WdfSpinLockAcquire(vqLock);
-
         buffer = virtqueue_get_buf(pVirtQueue, &length);
-        if (buffer == NULL)
+        WdfSpinLockRelease(vqLock);
+
+        if (!buffer)
         {
-            WdfSpinLockRelease(vqLock);
             break;
         }
 
@@ -99,14 +71,13 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             break;
         case VIRTIO_GPU_CMD_SUBMIT_3D:
         {
-            if (buffer->Extend != NULL)
+            if (buffer->ResourceIds != NULL)
             {
-                PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
+                PVIRGL_CONTEXT virglContext = GetVirglContextFromListUnsafe(header->ctx_id);
                 if (virglContext)
                 {
-                    UpdateResourceState(virglContext, buffer->Extend, buffer->ExtendSize, FALSE, header->fence_id);
+                    UpdateResourceState(virglContext, buffer->ResourceIds, buffer->ResourceIdsCount, FALSE, header->fence_id);
                 }
-                ExFreePoolWithTag(buffer->Extend, VIRTIO_VGPU_MEMORY_TAG);
             }
 
             if (buffer->FenceObject != NULL)
@@ -114,18 +85,14 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 KeSetEvent(buffer->FenceObject, IO_NO_INCREMENT, FALSE);
             }
 
-            // relesase the contiguous cmd data buffer
-            if (buffer->pDataBuf != NULL)
-            {
-                FreeVgpuMemory(buffer->pDataBuf);
-            }
-
+            FreeVgpuMemory(buffer->pDataBuf->Buffer.Memory.VirtualAddress);
+            ExFreeToLookasideListEx(&Context->VgpuMemoryNodeLookAsideList, buffer->pDataBuf);
             FreeCommandBuffer(Context, buffer);
             break;
         }
         case VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB:
         {
-            PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
+            PVIRGL_CONTEXT virglContext = GetVirglContextFromListUnsafe(header->ctx_id);
             if (virglContext)
             {
                 struct virtio_gpu_resource_map_blob* cmd = (struct virtio_gpu_resource_map_blob*)buffer->pRespBuf;
@@ -139,17 +106,18 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
         case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D:
         case VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D:
         {
-            PVIRGL_CONTEXT virglContext = GetVirglContextFromList(header->ctx_id);
+            PVIRGL_CONTEXT virglContext = GetVirglContextFromListUnsafe(header->ctx_id);
             if (virglContext)
             {
                 struct virtio_gpu_transfer_host_3d* transfer = (struct virtio_gpu_transfer_host_3d*)buffer->pBuf;
-                UpdateResourceState(virglContext, &((ULONG32)transfer->resource_id), sizeof(ULONG32), FALSE, header->fence_id);
+                UpdateResourceState(virglContext, &((ULONG32)transfer->resource_id), 1, FALSE, header->fence_id);
             }
             break;
         }
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_3D:
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB:
+        case VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB:
         case VIRTIO_GPU_CMD_RESOURCE_UNREF:
         case VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING:
         case VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING:
@@ -158,7 +126,6 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
         case VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE:
         case VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE:
         case VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D:
-        case VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB:
             FreeCommandBuffer(Context, buffer);
             break;
         default:
@@ -166,8 +133,6 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             FreeCommandBuffer(Context, buffer);
             break;
         }
-
-        WdfSpinLockRelease(vqLock);
     }
 }
 
@@ -177,14 +142,14 @@ VOID VirtioVgpuInterruptDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT AssociatedOb
 
     WDF_INTERRUPT_INFO  info;
     PDEVICE_CONTEXT     context;
-    struct virtqueue*   pVirtqueue = NULL;
     WDFSPINLOCK         vqLock = NULL;
+    struct virtqueue*   pVirtqueue = NULL;
 
     WDF_INTERRUPT_INFO_INIT(&info);
     WdfInterruptGetInfo(Interrupt, &info);
     context = GetDeviceContext(WdfInterruptGetDevice(Interrupt));
 
-    if ((info.MessageSignaled == TRUE) && (info.MessageNumber < context->NumVirtQueues))
+    if (info.MessageSignaled && info.MessageNumber < context->NumVirtQueues)
     {
         pVirtqueue = context->VirtQueues[info.MessageNumber];
         vqLock = context->VirtQueueLocks[info.MessageNumber];
@@ -207,17 +172,17 @@ VOID VirtioVgpuInterruptDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT AssociatedOb
 
 BOOLEAN VirtioVgpuInterruptIsr(IN WDFINTERRUPT Interrupt, IN ULONG MessageId)
 {
+    UNREFERENCED_PARAMETER(MessageId);
+
     PDEVICE_CONTEXT     context;
     WDF_INTERRUPT_INFO  info;
     BOOLEAN             serviced;
-
-    VGPU_DEBUG_LOG("--> %!FUNC! Interrupt: %p MessageId: %u", Interrupt, MessageId);
 
     WDF_INTERRUPT_INFO_INIT(&info);
     WdfInterruptGetInfo(Interrupt, &info);
     context = GetDeviceContext(WdfInterruptGetDevice(Interrupt));
 
-    if ((info.MessageSignaled && (MessageId < context->NumVirtQueues)) || VirtIOWdfGetISRStatus(&context->VDevice))
+    if (info.MessageSignaled || VirtIOWdfGetISRStatus(&context->VDevice))
     {
         WdfInterruptQueueDpcForIsr(Interrupt);
         serviced = TRUE;
@@ -296,7 +261,7 @@ NTSTATUS VirtioVgpuInterruptDisable(IN WDFINTERRUPT Interrupt, IN WDFDEVICE wdfD
 
 VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, IN ULONG IoControlCode)
 {
-    NTSTATUS        status;
+    NTSTATUS        status = STATUS_UNSUCCESSFUL;
     SIZE_T          bytesReturn = 0;
 
     switch (IoControlCode)
@@ -306,16 +271,10 @@ VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t Out
         break;
     case IOCTL_VIRTIO_VGPU_DESTROY_CONTEXT: 
     {
-        ULONG32 virglContextId = HandleToULong(PsGetCurrentProcessId());
-        PVIRGL_CONTEXT virglContext = GetVirglContextFromList(virglContextId);
+        PVIRGL_CONTEXT virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
         if (virglContext)
         {
             status = CtlDestroyVirglContext(virglContext);
-        }
-        else
-        {
-            VGPU_DEBUG_LOG("can't find the virgl context=%d, maybe it was cleared already", virglContextId);
-            status = STATUS_UNSUCCESSFUL;
         }
         break;
     }
@@ -348,6 +307,12 @@ VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t Out
         break;
     case IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE:
         status = CtlCreateBlobResource(Request, OutputBufferLength, InputBufferLength, &bytesReturn);
+        break;
+    case IOCTL_VIRTIO_VGPU_ALLOCATE_VGPU_MEMORY:
+        status = CtlAllocateVgpuMemory(Request, OutputBufferLength, InputBufferLength, &bytesReturn);
+        break;
+    case IOCTL_VIRTIO_VGPU_FREE_VGPU_MEMORY:
+        status = CtlFreeVgpuMemory(Request, InputBufferLength, &bytesReturn);
         break;
     default:
         status = STATUS_NOT_SUPPORTED;
@@ -479,6 +444,16 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
         VIRTIO_VGPU_MEMORY_TAG,
         0
     );
+    ExInitializeLookasideListEx(
+        &context->VgpuMemoryNodeLookAsideList,
+        NULL,
+        NULL,
+        NonPagedPool,
+        0,
+        sizeof(VGPU_MEMORY_NODE),
+        VIRTIO_VGPU_MEMORY_TAG,
+        0
+    );
 
     return STATUS_SUCCESS;
 }
@@ -527,6 +502,7 @@ NTSTATUS VirtioVgpuDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
     UnInitializeIdr();
     ExDeleteLookasideListEx(&context->VirglResourceLookAsideList);
     ExDeleteLookasideListEx(&context->VgpuBufferLookAsideList);
+    ExDeleteLookasideListEx(&context->VgpuMemoryNodeLookAsideList);
     PsSetCreateProcessNotifyRoutine(ProcessNotify, TRUE);
     VirtIOWdfShutdown(&context->VDevice);
 
@@ -563,7 +539,6 @@ NTSTATUS VirtioVgpuDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE 
     if (NT_SUCCESS(status))
     {
         VirtIOWdfSetDriverOK(&context->VDevice);
-        VGPU_DEBUG_LOG("init virtio queue index=0 size=%d", context->VirtQueues[0]->vdev->info->num);
     }
     else
     {

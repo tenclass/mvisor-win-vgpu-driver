@@ -56,6 +56,7 @@ typedef struct _DEVICE_CONTEXT {
     PVOID                   VgpuMemoryAddress;
     LOOKASIDE_LIST_EX       VirglResourceLookAsideList;
     LOOKASIDE_LIST_EX       VgpuBufferLookAsideList;
+    LOOKASIDE_LIST_EX       VgpuMemoryNodeLookAsideList;
     ULONG64                 Capabilities;
 } DEVICE_CONTEXT, * PDEVICE_CONTEXT;
 
@@ -70,42 +71,49 @@ typedef struct _SHARE_DESCRIPTOR {
     PMDL                pMdl;
     SIZE_T              Size;
     PVOID               UserAdderss;
-    PVOID               KennelAddress;
+    PVOID               KernelAddress;
 }SHARE_DESCRIPTOR, * PSHARE_DESCRIPTOR;
 
-typedef struct _VIRGL_RESOURCE_BUFFER {
+typedef struct _VGPU_MEMORY_BUFFER {
     SIZE_T				    Size;
     SHARE_DESCRIPTOR        Share;
     MEMORY_DESCRIPTOR       Memory;
-}VIRGL_RESOURCE_BUFFER, * PVIRGL_RESOURCE_BUFFER;
+}VGPU_MEMORY_BUFFER, * PVGPU_MEMORY_BUFFER;
+
+typedef struct _VGPU_MEMORY_NODE {
+    VGPU_MEMORY_BUFFER  Buffer;
+    LIST_ENTRY          Entry;
+}VGPU_MEMORY_NODE, * PVGPU_MEMORY_NODE;
 
 typedef struct _VIRGL_RESOURCE {
-    ULONG32				    Id;
-    KEVENT                  StateEvent;
-    LIST_ENTRY			    Entry;
-    BOOLEAN                 bForBuffer;
-    BOOLEAN                 bForBlob;
-    ULONG64                 FenceId;
-    VIRGL_RESOURCE_BUFFER   Buffer;
+    ULONG32             Id;
+    KEVENT              StateEvent;
+    LIST_ENTRY          Entry;
+    BOOLEAN             bForBuffer;
+    BOOLEAN             bForBlob;
+    ULONG64             FenceId;
+    VGPU_MEMORY_BUFFER  Buffer;
 }VIRGL_RESOURCE, * PVIRGL_RESOURCE;
 
 typedef struct _VIRGL_CONTEXT {
     ULONG32		    Id;
+    LIST_ENTRY	    ResourceList; 
     KSPIN_LOCK	    ResourceListSpinLock;
-    LIST_ENTRY	    ResourceList;
+    LIST_ENTRY	    VgpuMemoryNodeList;
+    KSPIN_LOCK	    VgpuMemoryNodeListSpinLock;
     LIST_ENTRY	    Entry;
     PDEVICE_CONTEXT DeviceContext;
 }VIRGL_CONTEXT, * PVIRGL_CONTEXT;
 
 typedef struct _VGPU_BUFFER {
-    PVOID           pBuf;
-    PVOID           pRespBuf;
-    PVOID           pDataBuf;
-    KEVENT          Event;
-    WDFREQUEST      Request;
-    PVOID           Extend;
-    SIZE_T          ExtendSize;
-    PVOID           FenceObject;
+    PVOID               pBuf;
+    PVOID               pRespBuf;
+    PVGPU_MEMORY_NODE   pDataBuf;
+    KEVENT              Event;
+    WDFREQUEST          Request;
+    PVOID               ResourceIds;
+    SIZE_T              ResourceIdsCount;
+    PVOID               FenceObject;
 }VGPU_BUFFER, * PVGPU_BUFFER;
 
 // gloval variables
@@ -117,5 +125,30 @@ KSPIN_LOCK  VirglContextListSpinLock;
 #define VGPU_DEBUG_PRINT(string) KdPrint(("[Mvisor] Func:%s Line:%d " string "\n", __FUNCTION__, __LINE__))
 #define VGPU_DEBUG_LOG(fmt, ...) KdPrint(("[Mvisor] Func:%s Line:%d " fmt "\n", __FUNCTION__, __LINE__, __VA_ARGS__))
 
-VOID SpinLock(KIRQL* Irql, PKSPIN_LOCK SpinLock);
-VOID SpinUnLock(KIRQL Irql, PKSPIN_LOCK SpinLock);
+FORCEINLINE VOID SpinLock(KIRQL* Irql, PKSPIN_LOCK SpinLock)
+{
+    KIRQL savedIrql = KeGetCurrentIrql();
+
+    if (savedIrql < DISPATCH_LEVEL)
+    {
+        KeAcquireSpinLock(SpinLock, &savedIrql);
+    }
+    else
+    {
+        KeAcquireSpinLockAtDpcLevel(SpinLock);
+    }
+
+    *Irql = savedIrql;
+}
+
+FORCEINLINE VOID SpinUnLock(KIRQL Irql, PKSPIN_LOCK SpinLock)
+{
+    if (Irql < DISPATCH_LEVEL)
+    {
+        KeReleaseSpinLock(SpinLock, Irql);
+    }
+    else
+    {
+        KeReleaseSpinLockFromDpcLevel(SpinLock);
+    }
+}

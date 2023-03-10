@@ -20,10 +20,104 @@
 #include "ioctl.h"
 
 
+FORCEINLINE PVGPU_MEMORY_NODE GetVgpuMemoryNodeFromListUnsafe(PVIRGL_CONTEXT VirglContext, PVOID UserAddress)
+{
+    PLIST_ENTRY         item;
+    BOOLEAN             bFind = FALSE;
+    PVGPU_MEMORY_NODE   memoryNode = NULL;
+
+    for (item = VirglContext->VgpuMemoryNodeList.Flink; item != &VirglContext->VgpuMemoryNodeList; item = item->Flink)
+    {
+        memoryNode = CONTAINING_RECORD(item, VGPU_MEMORY_NODE, Entry);
+        if (memoryNode->Buffer.Share.UserAdderss == UserAddress)
+        {
+            bFind = TRUE;
+            break;
+        }
+    }
+
+    return bFind ? memoryNode : NULL;
+}
+
+FORCEINLINE PVIRGL_RESOURCE GetResourceFromListUnsafe(PVIRGL_CONTEXT VirglContext, ULONG32 Id)
+{
+    PLIST_ENTRY     item;
+    BOOLEAN         bFind = FALSE;
+    PVIRGL_RESOURCE resource = NULL;
+
+    for (item = VirglContext->ResourceList.Flink; item != &VirglContext->ResourceList; item = item->Flink)
+    {
+        resource = CONTAINING_RECORD(item, VIRGL_RESOURCE, Entry);
+        if (resource->Id == Id)
+        {
+            bFind = TRUE;
+            break;
+        }
+    }
+
+    return bFind ? resource : NULL;
+}
+
+FORCEINLINE PVIRGL_CONTEXT GetVirglContextFromListUnsafe(ULONG32 VirglContextId)
+{
+    PLIST_ENTRY     item;
+    PVIRGL_CONTEXT  virglContext = NULL;
+    BOOLEAN         bFind = FALSE;
+
+    for (item = VirglContextList.Flink; item != &VirglContextList; item = item->Flink) {
+        virglContext = CONTAINING_RECORD(item, VIRGL_CONTEXT, Entry);
+        if (virglContext->Id == VirglContextId)
+        {
+            bFind = TRUE;
+            break;
+        }
+    }
+
+    return bFind ? virglContext : NULL;
+}
+
+FORCEINLINE VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, PULONG32 ResourceIds, SIZE_T ResourceIdsCount, BOOLEAN Busy, ULONG64 FenceId)
+{
+    SIZE_T          index;
+    BOOLEAN         bSignal;
+    PVIRGL_RESOURCE resource;
+
+    for (index = 0; index < ResourceIdsCount; index++)
+    {
+        resource = GetResourceFromListUnsafe(VirglContext, ResourceIds[index]);
+        if (resource)
+        {
+            bSignal = FALSE;
+
+            if (FenceId == 0)
+            {
+                bSignal = TRUE;
+            }
+            else if (FenceId >= resource->FenceId)
+            {
+                resource->FenceId = FenceId;
+                bSignal = TRUE;
+            }
+
+            if (bSignal)
+            {
+                if (Busy)
+                {
+                    KeClearEvent(&resource->StateEvent);
+                }
+                else
+                {
+                    KeSetEvent(&resource->StateEvent, 0, FALSE);
+                }
+            }
+        }
+    }
+}
+
+VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, PULONG32 ResourceIds, SIZE_T ResourceIdsCount, BOOLEAN Busy, ULONG64 FenceId);
+VOID MapBlobResourceCallback(PVIRGL_CONTEXT VirglContext, ULONG32 Id, ULONG64 Gpa, SIZE_T Size);
 PVIRGL_CONTEXT GetVirglContextFromList(ULONG32 VirglContextId);
 PVIRGL_RESOURCE GetResourceFromList(PVIRGL_CONTEXT VirglContext, ULONG32 Id);
-VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, ULONG32* Ids, SIZE_T IdsSize, BOOLEAN Busy, ULONG64 FenceId);
-VOID MapBlobResourceCallback(PVIRGL_CONTEXT VirglContext, ULONG32 Id, ULONG64 Gpa, SIZE_T Size);
 
 NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn);
 NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext);
@@ -36,3 +130,5 @@ NTSTATUS CtlWait(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t 
 NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn);
 NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn);
 NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn);
+NTSTATUS CtlAllocateVgpuMemory(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn);
+NTSTATUS CtlFreeVgpuMemory(IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn);

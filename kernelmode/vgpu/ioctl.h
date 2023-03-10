@@ -84,6 +84,16 @@ DEFINE_GUID(GUID_DEVINTERFACE_VGPU, 0x31c22912, 0x7210, 0x11ed, 0xbf, 0x22, 0xbc
     METHOD_OUT_DIRECT, \
     FILE_ANY_ACCESS)
 
+#define IOCTL_VIRTIO_VGPU_ALLOCATE_VGPU_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, \
+    0x812, \
+    METHOD_OUT_DIRECT, \
+    FILE_ANY_ACCESS)
+
+#define IOCTL_VIRTIO_VGPU_FREE_VGPU_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, \
+    0x813, \
+    METHOD_IN_DIRECT, \
+    FILE_ANY_ACCESS)
+
 #define VIRTGPU_PARAM_3D_FEATURES           1 /* do we have 3D features in the hw */
 #define VIRTGPU_PARAM_CAPSET_QUERY_FIX      2 /* do we have the capset fix */
 #define VIRTGPU_PARAM_RESOURCE_BLOB         3 /* DRM_VIRTGPU_RESOURCE_CREATE_BLOB */
@@ -230,4 +240,16 @@ struct drm_virtgpu_context_init {
 
     /* pointer to drm_virtgpu_context_set_param array */
     __u64 ctx_set_params;
+};
+
+struct drm_virtgpu_vgpu_memory_allocate {
+    __u64 size;
+};
+
+struct drm_virtgpu_vgpu_memory_allocate_resp {
+    __u64 address;
+};
+
+struct drm_virtgpu_vgpu_memory_free {
+    __u64 address;
 };

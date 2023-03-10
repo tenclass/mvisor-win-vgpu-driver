@@ -105,8 +105,9 @@ VOID FreeVgpuMemory(PVOID VitrualAddress)
     KIRQL           savedIrql;
     PLIST_ENTRY     item;
     ULONG64         offset;
+    PMEMORY_NODE    tmp;
     PMEMORY_NODE    node = NULL;
-    PMEMORY_NODE    tmp = NULL;
+    BOOLEAN         bFind = FALSE;
 
     if (!VgpuMemory.bInitialize)
     {
@@ -123,10 +124,17 @@ VOID FreeVgpuMemory(PVOID VitrualAddress)
         node = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
         if (node->Begin == offset)
         {
+            bFind = TRUE;
             break;
         }
     }
-    ASSERT(node != NULL);
+
+    if (!bFind)
+    {
+        SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
+        VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
+        return;
+    }
 
     // if the node was the first or last one in the list, update the used region
     if (node->Entry.Blink == &VgpuMemory.UsedList && node->Entry.Flink != &VgpuMemory.UsedList)
@@ -141,7 +149,7 @@ VOID FreeVgpuMemory(PVOID VitrualAddress)
     }
 
     // remove the target node
-    if (RemoveEntryList(&node->Entry))
+    if (RemoveEntryListUnsafe(&node->Entry))
     {
         // if list was empty, reset used region
         VgpuMemory.UsedRegionBegin = 0;
@@ -163,8 +171,8 @@ VOID FreeVgpuMemory(PVOID VitrualAddress)
 BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
 {
     KIRQL           savedIrql;
+    PMEMORY_NODE    tmp;
     PMEMORY_NODE    node;
-    PMEMORY_NODE    newNode;
     ULONG64         offset;
     NODE_POSITION   position;
     PLIST_ENTRY     item = NULL;
@@ -180,13 +188,13 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
         return FALSE;
     }
 
-    newNode = ExAllocateFromLookasideListEx(&VgpuMemory.LookAsideList);
-    if (!newNode)
+    node = ExAllocateFromLookasideListEx(&VgpuMemory.LookAsideList);
+    if (!node)
     {
         VGPU_DEBUG_PRINT("WRONG: allocate node memory failed");
         return FALSE;
     }
-    newNode->Size = Size;
+    node->Size = Size;
 
     // start processing
     SpinLock(&savedIrql, &VgpuMemory.SpinLock);
@@ -209,12 +217,12 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
         // the unused region can't satisfy the require size directly, so we scan the used list to find unused hole region
         for (item = VgpuMemory.UsedList.Flink; item != &VgpuMemory.UsedList; item = item->Flink)
         {
-            node = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
+            tmp = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
 
             // if overlaped with current used node, continue
-            if (offset < node->End && offset + Size > node->Begin)
+            if (offset < tmp->End && offset + Size > tmp->Begin)
             {
-                offset = node->End;
+                offset = tmp->End;
                 continue;
             }
 
@@ -224,35 +232,36 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
 
         if (item == &VgpuMemory.UsedList)
         {
+            SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
             VGPU_DEBUG_PRINT("WRONG: we can't locate the suitable region, never reach here");
             return FALSE;
         }
     }
 
     // now we get the suitable offset for target region
-    newNode->Begin = offset;
-    newNode->End = offset + Size;
+    node->Begin = offset;
+    node->End = offset + Size;
 
     // insert the node into the used list
     switch (position)
     {
     case LEFT:
-        InsertHeadList(&VgpuMemory.UsedList, &newNode->Entry);
-        VgpuMemory.UsedRegionBegin = newNode->Begin;
+        InsertHeadList(&VgpuMemory.UsedList, &node->Entry);
+        VgpuMemory.UsedRegionBegin = node->Begin;
         break;
     case MIDDLE:
         ASSERT(item != NULL);
         // get the right region between used nodes
-        newNode->Entry.Blink = item->Blink;
-        newNode->Entry.Flink = item;
+        node->Entry.Blink = item->Blink;
+        node->Entry.Flink = item;
 
         // repair the list Entry
-        item->Blink->Flink = &newNode->Entry;
-        item->Blink = &newNode->Entry;
+        item->Blink->Flink = &node->Entry;
+        item->Blink = &node->Entry;
         break;
     case RIGHT:
-        InsertTailList(&VgpuMemory.UsedList, &newNode->Entry);
-        VgpuMemory.UsedRegionEnd = newNode->End;
+        InsertTailList(&VgpuMemory.UsedList, &node->Entry);
+        VgpuMemory.UsedRegionEnd = node->End;
         break;
     }
 
@@ -268,4 +277,69 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
 
     VGPU_DEBUG_LOG("position=%d UsedRegionBegin=0x%llx UsedRegionEnd=0x%llx", position, VgpuMemory.UsedRegionBegin, VgpuMemory.UsedRegionEnd);
     return TRUE;
+}
+
+VOID ReallocVgpuMemory(PVOID VitrualAddress, SIZE_T Size)
+{
+    KIRQL           savedIrql;
+    PLIST_ENTRY     item;
+    ULONG64         offset;
+    PMEMORY_NODE    node = NULL;
+    BOOLEAN         bFind = FALSE;
+    SIZE_T          change;
+
+    if (!VgpuMemory.bInitialize)
+    {
+        return;
+    }
+    offset = (PUINT8)VitrualAddress - VgpuMemory.VirtualAddress;
+
+    // start processing
+    SpinLock(&savedIrql, &VgpuMemory.SpinLock);
+
+    // find the target node by offset
+    for (item = VgpuMemory.UsedList.Flink; item != &VgpuMemory.UsedList; item = item->Flink)
+    {
+        node = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
+        if (node->Begin == offset)
+        {
+            bFind = TRUE;
+            break;
+        }
+    }
+
+    if (!bFind)
+    {
+        VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
+        goto end;
+    }
+
+    if (node->Size == Size)
+    {
+        goto end;
+    }
+    else if (node->Size < Size)
+    {
+        VGPU_DEBUG_PRINT("WRONG: expanding current node was not implemented");
+        goto end;
+    }
+    else
+    {
+        change = node->Size - Size;
+        node->End -= change;
+        node->Size -= change;
+
+        // if last node, update the used region
+        if (node->Entry.Flink == &VgpuMemory.UsedList)
+        {
+            VgpuMemory.UsedRegionEnd = node->End;
+        }
+
+        // update available size
+        VgpuMemory.AvailableMemorySize += change;
+    }
+
+ end:
+    // end processing
+    SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
 }

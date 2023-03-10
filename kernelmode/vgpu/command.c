@@ -32,7 +32,7 @@ NTSTATUS PushQueue(PDEVICE_CONTEXT Context,
     void* va_indirect,
     ULONGLONG phys_indirect)
 {
-    int ret = -ENOSPC;
+    int ret;
     WdfSpinLockAcquire(Context->VirtQueueLocks[QueueIndex]);
     ret = virtqueue_add_buf(Context->VirtQueues[QueueIndex], sg, out_num, in_num, opaque, va_indirect, phys_indirect);
     WdfSpinLockRelease(Context->VirtQueueLocks[QueueIndex]);
@@ -498,16 +498,16 @@ VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Reso
     PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }
 
-NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_DESCRIPTOR Command, SIZE_T Size,
-    PVOID Extend, SIZE_T ExtendSize, ULONG64 FenceId, PVOID FenceObject)
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_NODE Command, SIZE_T Size,
+    PVOID ResourceIds, SIZE_T ResourceIdsCount, ULONG64 FenceId, PVOID FenceObject)
 {
     UINT32 outNum;
     struct VirtIOBufferDescriptor sg[SGLIST_SIZE];
 
     PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_cmd_submit), 0, FALSE, NULL);
-    buffer->Extend = Extend;
-    buffer->ExtendSize = ExtendSize;
-    buffer->pDataBuf = Command->VirtualAddress;
+    buffer->ResourceIds = ResourceIds;
+    buffer->ResourceIdsCount = ResourceIdsCount;
+    buffer->pDataBuf = Command;
     buffer->FenceObject = FenceObject;
 
     struct virtio_gpu_cmd_submit* cmd = buffer->pBuf;
@@ -523,7 +523,7 @@ NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_
 
     // cmd buffer use contiguous physical memory from vgpu memory
     outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
-    sg[outNum].physAddr = Command->PhysicalAddress;
+    sg[outNum].physAddr = Command->Buffer.Memory.PhysicalAddress;
     sg[outNum].length = (ULONG32)Size;
     outNum++;
 

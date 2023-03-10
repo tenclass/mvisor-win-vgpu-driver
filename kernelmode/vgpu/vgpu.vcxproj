@@ -139,6 +139,7 @@
     <IncludePath>$(SolutionDir)..\include\virtio\;$(IncludePath)</IncludePath>
     <OutDir>$(SolutionDir)..\build\$(SolutionName)\$(Platform)\$(ConfigurationName)\</OutDir>
     <EnableInf2cat>true</EnableInf2cat>
+    <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
@@ -159,7 +160,7 @@
       <AdditionalDependencies>virtiolib.lib;virtiolib_wdf.lib;wdmguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ClCompile>
-      <TreatWarningAsError>true</TreatWarningAsError>
+      <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

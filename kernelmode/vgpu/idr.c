@@ -103,5 +103,5 @@ VOID PutIdToIdr(UINT8 type, PVOID Id, SIZE_T Size)
 
     freeId->Id.QuadPart = 0;
     RtlCopyMemory(&freeId->Id, Id, Size);
-    ExInterlockedInsertTailList(&Idrs[type].FreeIdList, &freeId->Entry, &Idrs[type].SpinLock);
+    ExInterlockedInsertHeadList(&Idrs[type].FreeIdList, &freeId->Entry, &Idrs[type].SpinLock);
 }

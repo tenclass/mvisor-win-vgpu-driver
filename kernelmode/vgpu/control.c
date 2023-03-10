@@ -26,106 +26,50 @@
 PVIRGL_CONTEXT GetVirglContextFromList(ULONG32 VirglContextId)
 {
     KIRQL           savedIrql;
-    PLIST_ENTRY     item = NULL;
-    PVIRGL_CONTEXT  virglContext = NULL;
-    BOOLEAN         bFind = FALSE;
+    PVIRGL_CONTEXT  virglContext;
 
     SpinLock(&savedIrql, &VirglContextListSpinLock);
-    for (item = VirglContextList.Flink; item != &VirglContextList; item = item->Flink) {
-        virglContext = CONTAINING_RECORD(item, VIRGL_CONTEXT, Entry);
-        if (virglContext->Id == VirglContextId)
-        {
-            bFind = TRUE;
-            break;
-        }
-    }
+    virglContext = GetVirglContextFromListUnsafe(VirglContextId);
     SpinUnLock(savedIrql, &VirglContextListSpinLock);
 
-    return bFind ? virglContext : NULL;
+    return virglContext;
 }
 
-PVIRGL_RESOURCE GetResourceFromListUnsafe(PVIRGL_CONTEXT VirglContext, ULONG32 Id)
+PVGPU_MEMORY_NODE DeleteVgpuMemoryNodeFromList(PVIRGL_CONTEXT VirglContext, PVOID UserAddress)
 {
-    PLIST_ENTRY     item = NULL;
-    PVIRGL_RESOURCE resource = NULL;
+    KIRQL               savedIrql;
+    PVGPU_MEMORY_NODE   memoryNode;
 
-    for (item = VirglContext->ResourceList.Flink; item != &VirglContext->ResourceList; item = item->Flink)
+    SpinLock(&savedIrql, &VirglContext->VgpuMemoryNodeListSpinLock);
+    memoryNode = GetVgpuMemoryNodeFromListUnsafe(VirglContext, UserAddress);
+    if (memoryNode)
     {
-        resource = CONTAINING_RECORD(item, VIRGL_RESOURCE, Entry);
-        if (resource->Id == Id)
-        {
-            break;
-        }
+        RemoveEntryListUnsafe(&memoryNode->Entry);
     }
+    SpinUnLock(savedIrql, &VirglContext->VgpuMemoryNodeListSpinLock);
 
-    return resource;
+    return memoryNode;
 }
 
 PVIRGL_RESOURCE GetResourceFromList(PVIRGL_CONTEXT VirglContext, ULONG32 Id)
 {
-    PVIRGL_RESOURCE resource = NULL;
     KIRQL           savedIrql;
+    PVIRGL_RESOURCE resource;
 
     SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
     resource = GetResourceFromListUnsafe(VirglContext, Id);
     SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
 
     return resource;
-}
-
-VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, ULONG32* Ids, SIZE_T IdsSize, BOOLEAN Busy, ULONG64 FenceId)
-{
-    PVIRGL_RESOURCE resource;
-    KIRQL           savedIrql;
-    SIZE_T          index;
-    SIZE_T          count = IdsSize / sizeof(ULONG32);
-    BOOLEAN         bSignal;
-
-    SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
-    for (index = 0; index < count; index++)
-    {
-        resource = GetResourceFromListUnsafe(VirglContext, Ids[index]);
-        if (resource)
-        {
-            bSignal = FALSE;
-
-            if (FenceId == 0)
-            {
-                bSignal = TRUE;
-            }
-            else if (FenceId >= resource->FenceId)
-            {
-                resource->FenceId = FenceId;
-                bSignal = TRUE;
-            }
-
-            if (bSignal)
-            {
-                if (Busy)
-                {
-                    KeClearEvent(&resource->StateEvent);
-                }
-                else
-                {
-                    KeSetEvent(&resource->StateEvent, 0, FALSE);
-                }
-            }
-        }
-    }
-    SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
 }
 
 VOID MapBlobResourceCallback(PVIRGL_CONTEXT VirglContext, ULONG32 Id, ULONG64 Gpa, SIZE_T Size)
 {
     PHYSICAL_ADDRESS    phyaddr;
     PVIRGL_RESOURCE     resource;
-    KIRQL               savedIrql;
     PVOID               mapAddress;
 
-    SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
     resource = GetResourceFromListUnsafe(VirglContext, Id);
-    SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
-
     if (resource)
     {
         phyaddr.QuadPart = Gpa;
@@ -144,13 +88,13 @@ VOID MapBlobResourceCallback(PVIRGL_CONTEXT VirglContext, ULONG32 Id, ULONG64 Gp
 
 BOOLEAN CreateUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
 {
-    if (ShareMemory->KennelAddress == NULL || ShareMemory->Size == 0)
+    if (ShareMemory->KernelAddress == NULL || ShareMemory->Size == 0)
     {
-        VGPU_DEBUG_LOG("params invalid address=%p size=%lld", ShareMemory->KennelAddress, ShareMemory->Size);
+        VGPU_DEBUG_LOG("params invalid address=%p size=%lld", ShareMemory->KernelAddress, ShareMemory->Size);
         return FALSE;
     }
 
-    ShareMemory->pMdl = IoAllocateMdl(ShareMemory->KennelAddress, (ULONG32)ShareMemory->Size, FALSE, FALSE, NULL);
+    ShareMemory->pMdl = IoAllocateMdl(ShareMemory->KernelAddress, (ULONG32)ShareMemory->Size, FALSE, FALSE, NULL);
     if (!ShareMemory->pMdl)
     {
         VGPU_DEBUG_PRINT("IoAllocateMdl failed");
@@ -181,7 +125,6 @@ VOID DeleteUserShareMemory(PSHARE_DESCRIPTOR ShareMemory)
 {
     if (ShareMemory->UserAdderss == NULL || ShareMemory->pMdl == NULL)
     {
-        VGPU_DEBUG_PRINT("params invalid");
         return;
     }
 
@@ -216,7 +159,7 @@ VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE Resource)
 NTSTATUS CtlGetParams(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
     NTSTATUS status = STATUS_UNSUCCESSFUL;
-    ULONG64 *input = NULL, *output = NULL;
+    ULONG64* input = NULL, * output = NULL;
 
     if (!Capsets.Initialized)
     {
@@ -328,13 +271,13 @@ NTSTATUS CtlGetCaps(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t
 
 NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
-    NTSTATUS        status;
-    PVIRGL_CONTEXT  virglContext;
-    WDFMEMORY       contextParamMem;
-    ULONG           contextInit = 0;
-    ULONG           contextId;
-    struct drm_virtgpu_context_init* init;
-    struct drm_virtgpu_context_set_param* params;
+    NTSTATUS                                status;
+    PVIRGL_CONTEXT                          virglContext;
+    WDFMEMORY                               contextParamMem;
+    ULONG                                   contextInit = 0;
+    ULONG                                   contextId;
+    struct drm_virtgpu_context_init*        init;
+    struct drm_virtgpu_context_set_param*   params;
 
     // use current process id as virgl context id
     contextId = HandleToULong(PsGetCurrentProcessId());
@@ -377,7 +320,7 @@ NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, 
     {
         switch (params[i].param) {
         case VIRTGPU_CONTEXT_PARAM_CAPSET_ID:
-            if (params[i].value > MAX_CAPSET_ID) 
+            if (params[i].value > MAX_CAPSET_ID)
             {
                 status = STATUS_UNSUCCESSFUL;
                 break;
@@ -415,9 +358,11 @@ NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, 
     virglContext->Id = contextId;
     virglContext->DeviceContext = Context;
     KeInitializeSpinLock(&virglContext->ResourceListSpinLock);
+    KeInitializeSpinLock(&virglContext->VgpuMemoryNodeListSpinLock);
     InitializeListHead(&virglContext->ResourceList);
-    ExInterlockedInsertTailList(&VirglContextList, &virglContext->Entry, &VirglContextListSpinLock);
-    
+    InitializeListHead(&virglContext->VgpuMemoryNodeList);
+    ExInterlockedInsertHeadList(&VirglContextList, &virglContext->Entry, &VirglContextListSpinLock);
+
     CreateVirglContext(Context, contextId, contextInit);
     VGPU_DEBUG_LOG("create virgl context id=%d", contextId);
 
@@ -426,12 +371,13 @@ NTSTATUS CtlInitVirglContext(IN PDEVICE_CONTEXT Context, IN WDFREQUEST Request, 
 
 NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext)
 {
-    KIRQL           savedIrql;
-    PLIST_ENTRY     item;
-    PVIRGL_RESOURCE resource;
+    KIRQL               savedIrql;
+    PLIST_ENTRY         item;
+    PVIRGL_RESOURCE     resource;
+    PVGPU_MEMORY_NODE   memoryNode;
 
     SpinLock(&savedIrql, &VirglContextListSpinLock);
-    RemoveEntryList(&VirglContext->Entry);
+    RemoveEntryListUnsafe(&VirglContext->Entry);
     SpinUnLock(savedIrql, &VirglContextListSpinLock);
 
     SpinLock(&savedIrql, &VirglContext->ResourceListSpinLock);
@@ -440,11 +386,22 @@ NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext)
         item = RemoveTailList(&VirglContext->ResourceList);
         resource = CONTAINING_RECORD(item, VIRGL_RESOURCE, Entry);
 
-        // free resource
         DeleteResource(VirglContext, resource);
         ExFreeToLookasideListEx(&VirglContext->DeviceContext->VirglResourceLookAsideList, resource);
     }
     SpinUnLock(savedIrql, &VirglContext->ResourceListSpinLock);
+
+    SpinLock(&savedIrql, &VirglContext->VgpuMemoryNodeListSpinLock);
+    for (item = VirglContext->VgpuMemoryNodeList.Flink; item != &VirglContext->VgpuMemoryNodeList; item = item->Flink)
+    {
+        item = RemoveTailList(&VirglContext->VgpuMemoryNodeList);
+        memoryNode = CONTAINING_RECORD(item, VGPU_MEMORY_NODE, Entry);
+
+        DeleteUserShareMemory(&memoryNode->Buffer.Share);
+        FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress);
+        ExFreeToLookasideListEx(&VirglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
+    }
+    SpinUnLock(savedIrql, &VirglContext->VgpuMemoryNodeListSpinLock);
 
     // tell the host to destroy the virgl context
     DestroyVirglContext(VirglContext->DeviceContext, VirglContext->Id);
@@ -490,7 +447,7 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
         return STATUS_UNSUCCESSFUL;
     }
 
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
@@ -555,8 +512,8 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
     }
 
     // insert to the resource list
-    ExInterlockedInsertTailList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
-    
+    ExInterlockedInsertHeadList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
+
     // different from gem object in linux
     pCreateResourceResp->res_handle = pCreateResourceResp->bo_handle = resource->Id;
     VGPU_DEBUG_LOG("create resource id=%d bForBuffer=%d size=%d", resource->Id, resource->bForBuffer, pCreateResource->size);
@@ -566,12 +523,12 @@ NTSTATUS CtlCreateResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, 
 
 NTSTATUS CtlCreateBlobResource(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
-    NTSTATUS                            status;
-    PVIRGL_RESOURCE                     resource;
-    PVIRGL_CONTEXT                      virglContext;
-    VIRTGPU_BLOB_RESOURCE_CREATE_PARAM  create;
-    struct drm_virtgpu_resource_create_blob* pCreateResourceBlob;
-    struct drm_virtgpu_resource_create_resp* pCreateResourceResp;
+    NTSTATUS                                    status;
+    PVIRGL_RESOURCE                             resource;
+    PVIRGL_CONTEXT                              virglContext;
+    VIRTGPU_BLOB_RESOURCE_CREATE_PARAM          create;
+    struct drm_virtgpu_resource_create_blob*    pCreateResourceBlob;
+    struct drm_virtgpu_resource_create_resp*    pCreateResourceResp;
 
     status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &pCreateResourceBlob, bytesReturn);
     if (!NT_SUCCESS(status))
@@ -599,7 +556,7 @@ NTSTATUS CtlCreateBlobResource(IN WDFREQUEST Request, IN size_t OutputBufferLeng
         return STATUS_UNSUCCESSFUL;
     }
 
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
@@ -640,7 +597,7 @@ NTSTATUS CtlCreateBlobResource(IN WDFREQUEST Request, IN size_t OutputBufferLeng
     CreateBlobResource(virglContext->DeviceContext, virglContext->Id, resource->Id, &create, 0);
 
     // insert into resource list before map it
-    ExInterlockedInsertTailList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
+    ExInterlockedInsertHeadList(&virglContext->ResourceList, &resource->Entry, &virglContext->ResourceListSpinLock);
 
     // map blob resource
     MapBlobResource(virglContext->DeviceContext, virglContext->Id, resource->Id, 0);
@@ -672,7 +629,7 @@ NTSTATUS CtlCloseResource(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         return STATUS_UNSUCCESSFUL;
     }
 
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
@@ -685,12 +642,12 @@ NTSTATUS CtlCloseResource(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         VGPU_DEBUG_LOG("get resource failed id=%d", close->handle);
         return STATUS_UNSUCCESSFUL;
     }
-    
+
     // FIXME: we didn't put resource id back to idr, because it may conflict with migration
 
     // delete the resource from the virgl context resource list
     SpinLock(&savedIrql, &virglContext->ResourceListSpinLock);
-    RemoveEntryList(&resource->Entry);
+    RemoveEntryListUnsafe(&resource->Entry);
     SpinUnLock(savedIrql, &virglContext->ResourceListSpinLock);
 
     // free resource
@@ -735,7 +692,7 @@ NTSTATUS CtlWait(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t 
         return STATUS_UNSUCCESSFUL;
     }
 
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
@@ -813,7 +770,7 @@ NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t I
         return STATUS_UNSUCCESSFUL;
     }
 
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
@@ -846,7 +803,7 @@ NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t I
             KeWaitForSingleObject(&resource->StateEvent, Executive, KernelMode, FALSE, NULL);
         }
 
-        resource->Buffer.Share.KennelAddress = resource->Buffer.Memory.VirtualAddress;
+        resource->Buffer.Share.KernelAddress = resource->Buffer.Memory.VirtualAddress;
         resource->Buffer.Share.Size = resource->Buffer.Size;
         if (CreateUserShareMemory(&resource->Buffer.Share))
         {
@@ -863,20 +820,70 @@ NTSTATUS CtlMap(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t I
     return status;
 }
 
+NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
+{
+    NTSTATUS                        status;
+    PVIRGL_CONTEXT                  virglContext;
+    PVIRGL_RESOURCE                 resource;
+    struct drm_virtgpu_3d_transfer* cmd;
+
+    status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &cmd, bytesReturn);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_LOG("WdfRequestRetrieveInputBuffer failed status=0x%08x", status);
+        return status;
+    }
+
+    if (*bytesReturn != sizeof(struct drm_virtgpu_3d_transfer))
+    {
+        VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
+    if (!virglContext)
+    {
+        VGPU_DEBUG_PRINT("get virgl context failed");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    resource = GetResourceFromListUnsafe(virglContext, cmd->bo_handle);
+    if (!resource)
+    {
+        VGPU_DEBUG_LOG("get resource failed id=%d", cmd->bo_handle);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    VIRTGPU_TRANSFER_HOST_3D_PARAM  transfer3d;
+    transfer3d.box.x = cmd->box.x;
+    transfer3d.box.y = cmd->box.y;
+    transfer3d.box.z = cmd->box.z;
+    transfer3d.box.w = cmd->box.w;
+    transfer3d.box.h = cmd->box.h;
+    transfer3d.box.d = cmd->box.d;
+
+    transfer3d.layer_stride = cmd->layer_stride;
+    transfer3d.level = cmd->level;
+    transfer3d.offset = cmd->offset;
+    transfer3d.stride = cmd->stride;
+    transfer3d.resource_id = resource->Id;
+
+    UpdateResourceState(virglContext, &resource->Id, 1, TRUE, 0);
+    TransferHost3D(virglContext->DeviceContext, virglContext->Id, &transfer3d, 0, ToHost);
+
+    return status;
+}
+
 NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
     NTSTATUS                        status;
     ULONG64                         fenceId;
-    WDFMEMORY                       commandMem;
-    WDFMEMORY                       handlesMem;
     PVOID                           inFence = NULL;
     PVOID                           outFence = NULL;
-    PVOID                           wdfCommandBuf;
-    PVOID                           extend = NULL;
-    ULONG32*                        bohandles;
-    SIZE_T                          boHandlesSize = 0;
-    MEMORY_DESCRIPTOR               vgpuMemory;
+    PVOID                           boHandles = NULL;
+    SIZE_T                          boHandlesSize;
     PVIRGL_CONTEXT                  virglContext;
+    PVGPU_MEMORY_NODE               memoryNode;
     struct drm_virtgpu_execbuffer*  cmd;
 
     status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &cmd, bytesReturn);
@@ -892,21 +899,7 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         return STATUS_UNSUCCESSFUL;
     }
 
-    status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)cmd->command, cmd->size, &commandMem);
-    if (!NT_SUCCESS(status))
-    {
-        VGPU_DEBUG_LOG("WdfRequestProbeAndLockUserBufferForRead failed status=0x%08x", status);
-        return status;
-    }
-
-    wdfCommandBuf = WdfMemoryGetBuffer(commandMem, NULL);
-    if (!wdfCommandBuf)
-    {
-        VGPU_DEBUG_PRINT("WdfMemoryGetBuffer failed");
-        return STATUS_UNSUCCESSFUL;
-    }
-
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
@@ -942,62 +935,50 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         }
     }
 
+    memoryNode = DeleteVgpuMemoryNodeFromList(virglContext, (PVOID)cmd->command);
+    if (!memoryNode)
+    {
+        VGPU_DEBUG_PRINT("get vgpu memory node failed");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    // delete user space mdl now because mesa icd will create new command buffer and this memory node would never be accessed by user space again
+    // this memory node would be freed in VIRTIO_GPU_CMD_SUBMIT_3D callback
+    DeleteUserShareMemory(&memoryNode->Buffer.Share);
+
     // get new fence
     GetIdFromIdrWithoutCache(FENCE_ID_TYPE, &fenceId, sizeof(ULONG64));
 
     if (cmd->num_bo_handles > 0)
     {
-        boHandlesSize = sizeof(ULONG32) * cmd->num_bo_handles;
-        status = WdfRequestProbeAndLockUserBufferForRead(Request, (PVOID)cmd->bo_handles, boHandlesSize, &handlesMem);
-        if (!NT_SUCCESS(status))
-        {
-            VGPU_DEBUG_PRINT("WdfRequestProbeAndLockUserBufferForRead bohandles failed");
-            return status;
-        }
+        boHandles = (PUINT8)memoryNode->Buffer.Memory.VirtualAddress + cmd->size;
+        boHandlesSize = cmd->num_bo_handles * sizeof(ULONG32);
 
-        bohandles = WdfMemoryGetBuffer(handlesMem, NULL);
-        if (!bohandles)
-        {
-            VGPU_DEBUG_PRINT("WdfMemoryGetBuffer failed");
-            return STATUS_UNSUCCESSFUL;
-        }
+        // move bohandles buffer to the end of cmd buffer
+        memmove(boHandles, (PUINT8)memoryNode->Buffer.Memory.VirtualAddress + (cmd->bo_handles - cmd->command), boHandlesSize);
 
         // make all resources referenced busy
-        UpdateResourceState(virglContext, bohandles, boHandlesSize, TRUE, fenceId);
+        UpdateResourceState(virglContext, boHandles, cmd->num_bo_handles, TRUE, fenceId);
 
-        // backup these handles to make them idle later
-        extend = ExAllocatePool2(POOL_FLAG_NON_PAGED | POOL_FLAG_UNINITIALIZED, boHandlesSize, VIRTIO_VGPU_MEMORY_TAG);
-        if (extend == NULL)
-        {
-            VGPU_DEBUG_PRINT("allocate memory failed");
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        RtlCopyMemory(extend, bohandles, boHandlesSize);
+        // reset current node size
+        ReallocVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, cmd->size + boHandlesSize);
     }
-
-    // the command buffer from user mode was allocated from paged pool memory, we had to copy it to nonpaged pool to get the physical address
-    if (!AllocateVgpuMemory(cmd->size, &vgpuMemory))
+    else
     {
-        if (extend)
-        {
-            ExFreePoolWithTag(extend, VIRTIO_VGPU_MEMORY_TAG);
-        }
-        VGPU_DEBUG_PRINT("allocate memory failed");
-        return STATUS_INSUFFICIENT_RESOURCES;
+        // reset current node size
+        ReallocVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, cmd->size);
     }
 
-    // copy user cmd buffer to vgpu memory
-    RtlCopyMemory(vgpuMemory.VirtualAddress, wdfCommandBuf, cmd->size);
-
-    return SubmitCommand(virglContext->DeviceContext, virglContext->Id, &vgpuMemory, cmd->size, extend, boHandlesSize, fenceId, outFence);
+    return SubmitCommand(virglContext->DeviceContext, virglContext->Id, memoryNode, cmd->size, boHandles, cmd->num_bo_handles, fenceId, outFence);
 }
 
-NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
+NTSTATUS CtlAllocateVgpuMemory(IN WDFREQUEST Request, IN size_t OutputBufferLength, IN size_t InputBufferLength, OUT size_t* bytesReturn)
 {
-    NTSTATUS                        status;
-    PVIRGL_CONTEXT                  virglContext;
-    PVIRGL_RESOURCE                 resource;
-    struct drm_virtgpu_3d_transfer* cmd;
+    NTSTATUS                                        status;
+    PVIRGL_CONTEXT                                  virglContext;
+    PVGPU_MEMORY_NODE                               memoryNode;
+    struct drm_virtgpu_vgpu_memory_allocate*        cmd;
+    struct drm_virtgpu_vgpu_memory_allocate_resp*   resp;
 
     status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &cmd, bytesReturn);
     if (!NT_SUCCESS(status))
@@ -1006,42 +987,100 @@ NTSTATUS CtlTransferHost(IN BOOLEAN ToHost, IN WDFREQUEST Request, IN size_t Inp
         return status;
     }
 
-    if (*bytesReturn != sizeof(struct drm_virtgpu_3d_transfer))
+    if (*bytesReturn != sizeof(struct drm_virtgpu_vgpu_memory_allocate))
     {
         VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
         return STATUS_UNSUCCESSFUL;
     }
 
-    virglContext = GetVirglContextFromList(HandleToULong(PsGetCurrentProcessId()));
+    status = WdfRequestRetrieveOutputBuffer(Request, OutputBufferLength, &resp, bytesReturn);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_LOG("WdfRequestRetrieveOutputBuffer failed status=0x%08x", status);
+        return status;
+    }
+
+    if (*bytesReturn != sizeof(struct drm_virtgpu_vgpu_memory_allocate_resp))
+    {
+        VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
     if (!virglContext)
     {
         VGPU_DEBUG_PRINT("get virgl context failed");
         return STATUS_UNSUCCESSFUL;
     }
 
-    resource = GetResourceFromList(virglContext, cmd->bo_handle);
-    if (!resource)
+    memoryNode = ExAllocateFromLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList);
+    if (!memoryNode)
     {
-        VGPU_DEBUG_LOG("get resource failed id=%d", cmd->bo_handle);
+        VGPU_DEBUG_PRINT("allocate memory failed");
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    memoryNode->Buffer.Size = cmd->size;
+    if (!AllocateVgpuMemory(memoryNode->Buffer.Size, &memoryNode->Buffer.Memory))
+    {
+        ExFreeToLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
+        VGPU_DEBUG_PRINT("allocate memory failed");
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    memoryNode->Buffer.Share.Size = memoryNode->Buffer.Size;
+    memoryNode->Buffer.Share.KernelAddress = memoryNode->Buffer.Memory.VirtualAddress;
+    if (!CreateUserShareMemory(&memoryNode->Buffer.Share))
+    {
+        FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress);
+        ExFreeToLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
+        VGPU_DEBUG_PRINT("create use share memory failed");
         return STATUS_UNSUCCESSFUL;
     }
 
-    VIRTGPU_TRANSFER_HOST_3D_PARAM  transfer3d;
-    transfer3d.box.x = cmd->box.x;
-    transfer3d.box.y = cmd->box.y;
-    transfer3d.box.z = cmd->box.z;
-    transfer3d.box.w = cmd->box.w;
-    transfer3d.box.h = cmd->box.h;
-    transfer3d.box.d = cmd->box.d;
+    ExInterlockedInsertHeadList(&virglContext->VgpuMemoryNodeList, &memoryNode->Entry, &virglContext->VgpuMemoryNodeListSpinLock);
+    resp->address = (ULONG64)memoryNode->Buffer.Share.UserAdderss;
 
-    transfer3d.layer_stride = cmd->layer_stride;
-    transfer3d.level = cmd->level;
-    transfer3d.offset = cmd->offset;
-    transfer3d.stride = cmd->stride;
-    transfer3d.resource_id = resource->Id;
+    return status;
+}
 
-    UpdateResourceState(virglContext, &resource->Id, sizeof(ULONG32), TRUE, 0);
-    TransferHost3D(virglContext->DeviceContext, virglContext->Id, &transfer3d, 0, ToHost);
+NTSTATUS CtlFreeVgpuMemory(IN WDFREQUEST Request, IN size_t InputBufferLength, OUT size_t* bytesReturn)
+{
+    NTSTATUS                                status;
+    PVIRGL_CONTEXT                          virglContext;
+    PVGPU_MEMORY_NODE                       memoryNode;
+    struct drm_virtgpu_vgpu_memory_free*    cmd;
+
+    status = WdfRequestRetrieveInputBuffer(Request, InputBufferLength, &cmd, bytesReturn);
+    if (!NT_SUCCESS(status))
+    {
+        VGPU_DEBUG_LOG("WdfRequestRetrieveInputBuffer failed status=0x%08x", status);
+        return status;
+    }
+
+    if (*bytesReturn != sizeof(struct drm_virtgpu_vgpu_memory_free))
+    {
+        VGPU_DEBUG_LOG("get wrong buffer size=%lld", *bytesReturn);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    virglContext = GetVirglContextFromListUnsafe(HandleToULong(PsGetCurrentProcessId()));
+    if (!virglContext)
+    {
+        VGPU_DEBUG_PRINT("get virgl context failed");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    memoryNode = DeleteVgpuMemoryNodeFromList(virglContext, (PVOID)cmd->address);
+    if (!memoryNode)
+    {
+        VGPU_DEBUG_PRINT("get vgpu memory node failed");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    DeleteUserShareMemory(&memoryNode->Buffer.Share);
+    FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress);
+    ExFreeToLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
 
     return status;
 }
