@@ -56,7 +56,6 @@ typedef struct _DEVICE_CONTEXT {
     PVOID                   VgpuMemoryAddress;
     LOOKASIDE_LIST_EX       VirglResourceLookAsideList;
     LOOKASIDE_LIST_EX       VgpuBufferLookAsideList;
-    LOOKASIDE_LIST_EX       VgpuMemoryNodeLookAsideList;
     ULONG64                 Capabilities;
 } DEVICE_CONTEXT, * PDEVICE_CONTEXT;
 
@@ -80,11 +79,6 @@ typedef struct _VGPU_MEMORY_BUFFER {
     MEMORY_DESCRIPTOR       Memory;
 }VGPU_MEMORY_BUFFER, * PVGPU_MEMORY_BUFFER;
 
-typedef struct _VGPU_MEMORY_NODE {
-    VGPU_MEMORY_BUFFER  Buffer;
-    LIST_ENTRY          Entry;
-}VGPU_MEMORY_NODE, * PVGPU_MEMORY_NODE;
-
 typedef struct _VIRGL_RESOURCE {
     ULONG32             Id;
     KEVENT              StateEvent;
@@ -99,8 +93,6 @@ typedef struct _VIRGL_CONTEXT {
     ULONG32		    Id;
     LIST_ENTRY	    ResourceList; 
     KSPIN_LOCK	    ResourceListSpinLock;
-    LIST_ENTRY	    VgpuMemoryNodeList;
-    KSPIN_LOCK	    VgpuMemoryNodeListSpinLock;
     LIST_ENTRY	    Entry;
     PDEVICE_CONTEXT DeviceContext;
 }VIRGL_CONTEXT, * PVIRGL_CONTEXT;
@@ -108,9 +100,10 @@ typedef struct _VIRGL_CONTEXT {
 typedef struct _VGPU_BUFFER {
     PVOID               pBuf;
     PVOID               pRespBuf;
-    PVGPU_MEMORY_NODE   pDataBuf;
     KEVENT              Event;
     WDFREQUEST          Request;
+    PVOID               pDataBuf;
+    SIZE_T              DataBufSize;
     PVOID               ResourceIds;
     SIZE_T              ResourceIdsCount;
     PVOID               FenceObject;

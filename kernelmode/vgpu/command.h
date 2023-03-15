@@ -338,11 +338,20 @@ typedef struct _VIRTGPU_TRANSFER_HOST_3D_PARAM {
     __le32 layer_stride;
 }VIRTGPU_TRANSFER_HOST_3D_PARAM, * PVIRTGPU_TRANSFER_HOST_3D_PARAM;
 
+
+FORCEINLINE VOID FreeCommandBuffer(PDEVICE_CONTEXT Context, PVGPU_BUFFER Buffer)
+{
+    if (Buffer->pBuf)
+    {
+        ExFreePoolWithTag(Buffer->pBuf, VIRTIO_VGPU_MEMORY_TAG);
+    }
+    ExFreeToLookasideListEx(&Context->VgpuBufferLookAsideList, Buffer);
+}
+
 VOID GetCapsInfo(PDEVICE_CONTEXT Context);
 VOID GetCaps(PDEVICE_CONTEXT Context, INT32 CapsIndex, UINT32 CapsVer, PVOID pCaps);
 VOID CreateVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ContextInit);
 VOID DestroyVirglContext(PDEVICE_CONTEXT Context, ULONG32 VirglContextId);
-VOID FreeCommandBuffer(PDEVICE_CONTEXT Context, PVGPU_BUFFER pBuffer);
 VOID Create2DResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);
 VOID Create3DResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);
 VOID CreateBlobResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId, PVIRTGPU_BLOB_RESOURCE_CREATE_PARAM Create, ULONG64 FenceId);
@@ -355,5 +364,5 @@ VOID DetachResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Res
 VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 ResourceId);
 VOID TransferToHost2D(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRTGPU_TRANSFER_HOST_2D_PARAM Transfer);
 VOID TransferHost3D(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVIRTGPU_TRANSFER_HOST_3D_PARAM Transfer, ULONG64 FenceId, BOOLEAN ToHost);
-NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_NODE Command, SIZE_T Size,
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_DESCRIPTOR Command, SIZE_T CommandBufSize, SIZE_T CommandSize,
     PVOID ResourceIds, SIZE_T ResourceIdsCount, ULONG64 FenceId, PVOID FenceObject);

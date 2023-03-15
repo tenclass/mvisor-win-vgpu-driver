@@ -78,6 +78,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 {
                     UpdateResourceState(virglContext, buffer->ResourceIds, buffer->ResourceIdsCount, FALSE, header->fence_id);
                 }
+                ExFreePoolWithTag(buffer->ResourceIds, VIRTIO_VGPU_MEMORY_TAG);
             }
 
             if (buffer->FenceObject != NULL)
@@ -85,8 +86,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 KeSetEvent(buffer->FenceObject, IO_NO_INCREMENT, FALSE);
             }
 
-            FreeVgpuMemory(buffer->pDataBuf->Buffer.Memory.VirtualAddress, buffer->pDataBuf->Buffer.Size);
-            ExFreeToLookasideListEx(&Context->VgpuMemoryNodeLookAsideList, buffer->pDataBuf);
+            FreeVgpuMemory(buffer->pDataBuf, buffer->DataBufSize);
             FreeCommandBuffer(Context, buffer);
             break;
         }
@@ -308,12 +308,6 @@ VOID VirtioVgpuIoControl(IN WDFQUEUE Queue, IN WDFREQUEST Request, IN size_t Out
     case IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE:
         status = CtlCreateBlobResource(Request, OutputBufferLength, InputBufferLength, &bytesReturn);
         break;
-    case IOCTL_VIRTIO_VGPU_ALLOCATE_VGPU_MEMORY:
-        status = CtlAllocateVgpuMemory(Request, OutputBufferLength, InputBufferLength, &bytesReturn);
-        break;
-    case IOCTL_VIRTIO_VGPU_FREE_VGPU_MEMORY:
-        status = CtlFreeVgpuMemory(Request, InputBufferLength, &bytesReturn);
-        break;
     default:
         status = STATUS_NOT_SUPPORTED;
         VGPU_DEBUG_LOG("unsupport ioctl code=%d", IoControlCode);
@@ -444,16 +438,6 @@ NTSTATUS VirtioVgpuDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
         VIRTIO_VGPU_MEMORY_TAG,
         0
     );
-    ExInitializeLookasideListEx(
-        &context->VgpuMemoryNodeLookAsideList,
-        NULL,
-        NULL,
-        NonPagedPool,
-        0,
-        sizeof(VGPU_MEMORY_NODE),
-        VIRTIO_VGPU_MEMORY_TAG,
-        0
-    );
 
     return STATUS_SUCCESS;
 }
@@ -502,7 +486,6 @@ NTSTATUS VirtioVgpuDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
     UnInitializeIdr();
     ExDeleteLookasideListEx(&context->VirglResourceLookAsideList);
     ExDeleteLookasideListEx(&context->VgpuBufferLookAsideList);
-    ExDeleteLookasideListEx(&context->VgpuMemoryNodeLookAsideList);
     PsSetCreateProcessNotifyRoutine(ProcessNotify, TRUE);
     VirtIOWdfShutdown(&context->VDevice);
 

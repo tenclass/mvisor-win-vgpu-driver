@@ -75,16 +75,6 @@ PVGPU_BUFFER AllocateCommandBuffer(PDEVICE_CONTEXT Context, size_t CmdSize, size
     return buffer;
 }
 
-VOID FreeCommandBuffer(PDEVICE_CONTEXT Context, PVGPU_BUFFER Buffer)
-{
-    if (Buffer->pBuf)
-    {
-        ExFreePoolWithTag(Buffer->pBuf, VIRTIO_VGPU_MEMORY_TAG);
-    }
-
-    ExFreeToLookasideListEx(&Context->VgpuBufferLookAsideList, Buffer);
-}
-
 UINT32 BuildSGElement(struct VirtIOBufferDescriptor* pSgList, SIZE_T MaxSgCount, PUINT8 pBuf, SIZE_T Size)
 {
     ULONG   length;
@@ -498,7 +488,7 @@ VOID UnrefResource(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, ULONG32 Reso
     PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);
 }
 
-NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_MEMORY_NODE Command, SIZE_T Size,
+NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PMEMORY_DESCRIPTOR Command, SIZE_T CommandBufSize, SIZE_T CommandSize,
     PVOID ResourceIds, SIZE_T ResourceIdsCount, ULONG64 FenceId, PVOID FenceObject)
 {
     UINT32 outNum;
@@ -507,13 +497,14 @@ NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_ME
     PVGPU_BUFFER buffer = AllocateCommandBuffer(Context, sizeof(struct virtio_gpu_cmd_submit), 0, FALSE, NULL);
     buffer->ResourceIds = ResourceIds;
     buffer->ResourceIdsCount = ResourceIdsCount;
-    buffer->pDataBuf = Command;
+    buffer->pDataBuf = Command->VirtualAddress;
+    buffer->DataBufSize = CommandBufSize;
     buffer->FenceObject = FenceObject;
 
     struct virtio_gpu_cmd_submit* cmd = buffer->pBuf;
     cmd->hdr.ctx_id = VirglContextId;
     cmd->hdr.type = VIRTIO_GPU_CMD_SUBMIT_3D;
-    cmd->size = (ULONG32)Size;
+    cmd->size = (ULONG32)CommandSize;
 
     if (FenceId > 0)
     {
@@ -523,8 +514,8 @@ NTSTATUS SubmitCommand(PDEVICE_CONTEXT Context, ULONG32 VirglContextId, PVGPU_ME
 
     // cmd buffer use contiguous physical memory from vgpu memory
     outNum = BuildSGElement(&sg[0], SGLIST_SIZE, (PUINT8)cmd, sizeof(*cmd));
-    sg[outNum].physAddr = Command->Buffer.Memory.PhysicalAddress;
-    sg[outNum].length = (ULONG32)Size;
+    sg[outNum].physAddr = Command->PhysicalAddress;
+    sg[outNum].length = (ULONG32)CommandSize;
     outNum++;
 
     return PushQueue(Context, COMMAND_QUEUE, sg, outNum, 0, buffer, NULL, 0);

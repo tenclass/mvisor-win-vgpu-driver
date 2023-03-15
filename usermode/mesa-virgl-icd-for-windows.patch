@@ -1,11 +1,11 @@
-From 2bf9c5817d910c308645d2fe6fdea3ec1e967965 Mon Sep 17 00:00:00 2001
+From 35cb38e2ddc46a1b0f2f2351e813f10a417434f1 Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Tue, 14 Mar 2023 14:21:13 +0800
+Date: Thu, 16 Mar 2023 22:47:58 +0800
 Subject: [PATCH] mesa virgl icd for windows
 
 ---
  include/drm-uapi/drm.h                        |   4 +
- include/drm-uapi/virtgpu_drm.h                |  51 +-
+ include/drm-uapi/virtgpu_drm.h                |  39 +-
  include/linuz/ioccom.h                        |  91 ++
  include/linuz/xf86drm.h                       | 899 ++++++++++++++++++
  src/gallium/drivers/virgl/meson.build         |   2 +-
@@ -17,17 +17,17 @@ Subject: [PATCH] mesa virgl icd for windows
  src/gallium/drivers/virgl/virgl_winsys.h      |   7 +-
  src/gallium/meson.build                       |   2 +-
  src/gallium/targets/wgl/meson.build           |   2 +-
- src/gallium/targets/wgl/wgl.c                 |  37 +
+ src/gallium/targets/wgl/wgl.c                 |  41 +
  src/gallium/winsys/virgl/drm/meson.build      |   2 +-
  .../winsys/virgl/drm/virgl_drm_public.h       |   6 +-
- .../winsys/virgl/drm/virgl_drm_winsys.c       | 526 +++++++++-
+ .../winsys/virgl/drm/virgl_drm_winsys.c       | 515 +++++++++-
  .../winsys/virgl/drm/virgl_drm_winsys.h       |  12 +
- src/gallium/winsys/virgl/lib/ioctl.h          |  97 ++
+ src/gallium/winsys/virgl/lib/ioctl.h          |  87 ++
  src/gallium/winsys/virgl/lib/meson.build      |  34 +
- src/gallium/winsys/virgl/lib/vgpu_api.c       | 339 +++++++
- src/gallium/winsys/virgl/lib/vgpu_api.h       |  48 +
+ src/gallium/winsys/virgl/lib/vgpu_api.c       | 263 +++++
+ src/gallium/winsys/virgl/lib/vgpu_api.h       |  46 +
  src/mesa/main/version.c                       |   2 +-
- 23 files changed, 2251 insertions(+), 34 deletions(-)
+ 23 files changed, 2122 insertions(+), 56 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -52,7 +52,7 @@ index c76325fc3cb..7bbd41ba9e8 100644
  typedef int8_t   __s8;
  typedef uint8_t  __u8;
 diff --git a/include/drm-uapi/virtgpu_drm.h b/include/drm-uapi/virtgpu_drm.h
-index 0512fde5e69..15e1967768a 100644
+index 0512fde5e69..a8e2973e040 100644
 --- a/include/drm-uapi/virtgpu_drm.h
 +++ b/include/drm-uapi/virtgpu_drm.h
 @@ -70,9 +70,15 @@ struct drm_virtgpu_execbuffer {
@@ -135,25 +135,6 @@ index 0512fde5e69..15e1967768a 100644
  };
  
  #define VIRTGPU_CONTEXT_PARAM_CAPSET_ID       0x0001
-@@ -196,6 +223,18 @@ struct drm_virtgpu_context_init {
- 	__u64 ctx_set_params;
- };
- 
-+struct drm_virtgpu_vgpu_memory_allocate {
-+    __u64 size;
-+};
-+
-+struct drm_virtgpu_vgpu_memory_allocate_resp {
-+    __u64 address;
-+};
-+
-+struct drm_virtgpu_vgpu_memory_free {
-+	__u64 address;
-+};
-+
- /*
-  * Event code that's given when VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK is in
-  * effect.  The event size is sizeof(drm_event), since there is no additional
 diff --git a/include/linuz/ioccom.h b/include/linuz/ioccom.h
 new file mode 100644
 index 00000000000..00e87d9aa3a
@@ -1199,7 +1180,7 @@ index 40d1155bea7..32ae912c0b3 100644
  
  static void virgl_fence_server_sync(struct pipe_context *ctx,
 diff --git a/src/gallium/drivers/virgl/virgl_resource.c b/src/gallium/drivers/virgl/virgl_resource.c
-index 43f92af6923..fccb8961fe9 100644
+index 43f92af6923..b9a6bac433f 100644
 --- a/src/gallium/drivers/virgl/virgl_resource.c
 +++ b/src/gallium/drivers/virgl/virgl_resource.c
 @@ -36,6 +36,9 @@
@@ -1312,7 +1293,7 @@ index 43f92af6923..fccb8961fe9 100644
  
     u_default_buffer_subdata(pipe, resource, usage, offset, size, data);
 +
-+   if (!virgl_screen(pipe->screen)->vws->supports_coherent) {
++   if (resource->flags == 0 && usage == 0 && !(offset == 0 && size == resource->width0)) {
 +      // flush cmd to update host resource immediately in case that cinema4d got dirty screens
 +      virgl_flush_eq(vctx, NULL, NULL);
 +   }
@@ -1518,7 +1499,7 @@ index eaca0aec86b..433d24ed395 100644
    ],
    link_args : gallium_wgl_link_args,
 diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
-index da44e146488..7e88a28d21c 100644
+index da44e146488..8bb5833b4b7 100644
 --- a/src/gallium/targets/wgl/wgl.c
 +++ b/src/gallium/targets/wgl/wgl.c
 @@ -43,6 +43,10 @@
@@ -1549,26 +1530,28 @@ index da44e146488..7e88a28d21c 100644
  #endif
 +#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +static boolean use_virgl = FALSE;
-+static HANDLE vgpu_handle = INVALID_HANDLE_VALUE;
++static HANDLE vgpu_handle = NULL;
 +#endif
  
  static const char *created_driver_name = NULL;
  
-@@ -107,6 +119,13 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+@@ -107,6 +119,15 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
     }
  #endif
  
 +#if defined(GALLIUM_VIRGL) && defined(_WIN32)
 +   if (strcmp(driver, "virgl") == 0) {
 +      vgpu_handle = GetHandleFromVgpu();
-+      screen = virgl_drm_screen_create(vgpu_handle, NULL, winsys);
-+      use_virgl = TRUE;
++      if (vgpu_handle) {
++         screen = virgl_drm_screen_create(vgpu_handle, NULL, winsys);
++         use_virgl = TRUE;
++      }
 +   }
 +#endif
     return screen;
  }
  
-@@ -133,6 +152,9 @@ wgl_screen_create(HDC hDC)
+@@ -133,6 +154,9 @@ wgl_screen_create(HDC hDC)
  #endif
  #if defined(GALLIUM_SOFTPIPE)
        "softpipe",
@@ -1578,7 +1561,7 @@ index da44e146488..7e88a28d21c 100644
  #endif
     };
  
-@@ -143,6 +165,7 @@ wgl_screen_create(HDC hDC)
+@@ -143,6 +167,7 @@ wgl_screen_create(HDC hDC)
        struct pipe_screen* screen = wgl_screen_create_by_name(hDC, drivers[i], winsys);
        if (screen) {
           created_driver_name = drivers[i];
@@ -1586,7 +1569,7 @@ index da44e146488..7e88a28d21c 100644
           return screen;
        }
        if (i == 0 && drivers[i][0] != '\0')
-@@ -203,6 +226,13 @@ wgl_present(struct pipe_screen *screen,
+@@ -203,6 +228,13 @@ wgl_present(struct pipe_screen *screen,
     dt = softpipe_resource(res)->dt,
     gdi_sw_display(winsys, dt, hDC);
  #endif
@@ -1600,7 +1583,7 @@ index da44e146488..7e88a28d21c 100644
  }
  
  
-@@ -277,6 +307,7 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+@@ -277,6 +309,7 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
  {
     switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
@@ -1608,14 +1591,16 @@ index da44e146488..7e88a28d21c 100644
        stw_init(&stw_winsys);
        stw_init_thread();
        break;
-@@ -290,6 +321,12 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+@@ -290,6 +323,14 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
        break;
  
     case DLL_PROCESS_DETACH:
 +      _debug_printf("call DLL_PROCESS_DETACH\n");
 +#if defined(GALLIUM_VIRGL) && defined(_WIN32)
-+      if (vgpu_handle != INVALID_HANDLE_VALUE) {
++      if (vgpu_handle != NULL) {
 +         DestroyVirglContext(vgpu_handle);
++         CloseHandle(vgpu_handle);
++         vgpu_handle = NULL;
 +      }
 +#endif
        if (lpvReserved == NULL) {
@@ -1650,7 +1635,7 @@ index 32df3945ff4..8c9d9bfa94b 100644
  
  #endif
 diff --git a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
-index 6ae63e75758..7c580b4cbf1 100644
+index 6ae63e75758..d34067e4bf2 100644
 --- a/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 +++ b/src/gallium/winsys/virgl/drm/virgl_drm_winsys.c
 @@ -25,10 +25,15 @@
@@ -1881,75 +1866,40 @@ index 6ae63e75758..7c580b4cbf1 100644
  
     res->ptr = ptr;
     return ptr;
-@@ -847,6 +974,171 @@ static boolean virgl_drm_res_is_ref(struct virgl_winsys *qws,
+@@ -847,45 +974,112 @@ static boolean virgl_drm_res_is_ref(struct virgl_winsys *qws,
     return TRUE;
  }
  
+-static struct virgl_cmd_buf *virgl_drm_cmd_buf_create(struct virgl_winsys *qws,
+-                                                      uint32_t size)
 +#ifdef _WIN32
-+static struct virgl_cmd_buf *virgl_drm_cmd_buf_create(struct virgl_winsys *qws,
-+                                                      uint32_t size)
-+{
-+   struct virgl_drm_cmd_buf *cbuf;
-+   struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
-+   struct drm_virtgpu_vgpu_memory_allocate cmd = {0};
-+   struct drm_virtgpu_vgpu_memory_allocate_resp resp = {0}; 
-+
-+   cbuf = CALLOC_STRUCT(virgl_drm_cmd_buf);
-+   if (!cbuf)
-+      return NULL;
-+
-+   cbuf->cres = 0;
-+   cbuf->nres = 512;
-+   cbuf->ws = qws;
-+   cbuf->base.size = size * sizeof(uint32_t);
-+
-+   cbuf->res_bo = CALLOC(cbuf->nres, sizeof(struct virgl_hw_buf*));
-+   assert(cbuf->res_bo);
-+
-+   cmd.size = cbuf->base.size + cbuf->nres * sizeof(uint32_t);
-+   AllocateVgpuMemory(qdws->fd, &cmd, &resp);
-+
-+   cbuf->buf = (uint32_t*)resp.address;
-+   cbuf->res_hlist = (uint32_t*)(resp.address + cbuf->base.size);
-+
-+   cbuf->in_fence_fd = NULL;
-+   cbuf->base.buf = cbuf->buf;
-+   return &cbuf->base;
-+}
-+
-+static void virgl_drm_cmd_buf_destroy(struct virgl_cmd_buf *_cbuf)
-+{
-+   struct virgl_drm_cmd_buf *cbuf = virgl_drm_cmd_buf(_cbuf);
-+   struct virgl_drm_winsys *qdws = virgl_drm_winsys(cbuf->ws);
-+   struct drm_virtgpu_vgpu_memory_free cmd = {0};
-+
-+   for (int i = 0; i < cbuf->cres; i++) {
-+      p_atomic_dec(&cbuf->res_bo[i]->num_cs_references);
-+      virgl_drm_resource_reference(cbuf->ws, &cbuf->res_bo[i], NULL);
-+   }
-+
-+   cmd.address = (uint64_t)cbuf->buf;
-+   FreeVgpuMemory(qdws->fd, &cmd);
-+
-+   FREE(cbuf->res_bo);
-+   FREE(cbuf);
-+}
-+
 +static struct pipe_fence_handle* virgl_drm_fence_create(struct virgl_winsys *vws, HANDLE fd, bool external)
-+{
+ {
+-   struct virgl_drm_cmd_buf *cbuf;
 +   struct virgl_drm_fence *fence;
-+
+ 
+-   cbuf = CALLOC_STRUCT(virgl_drm_cmd_buf);
+-   if (!cbuf)
+-      return NULL;
 +   assert(vws->supports_fences);
-+
+ 
+-   cbuf->ws = qws;
 +   // external fd not implement
 +   assert(!external);
-+
+ 
+-   if (!virgl_drm_alloc_res_list(cbuf, 512)) {
+-      FREE(cbuf);
 +   fence = CALLOC_STRUCT(virgl_drm_fence);
 +   if (!fence) {
 +      CloseHandle(fd);
-+      return NULL;
-+   }
-+
+       return NULL;
+    }
+ 
+-   cbuf->buf = CALLOC(size, sizeof(uint32_t));
+-   if (!cbuf->buf) {
+-      FREE(cbuf->res_hlist);
+-      FREE(cbuf->res_bo);
+-      FREE(cbuf);
 +   fence->fd = fd;
 +   fence->external = external;
 +
@@ -1976,28 +1926,34 @@ index 6ae63e75758..7c580b4cbf1 100644
 +         PIPE_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM, 8, 1, 1, 0, 0, 0, 8, true);
 +   if (!fence->hw_res) {
 +      FREE(fence);
-+      return NULL;
-+   }
-+
+       return NULL;
+    }
+ 
+-   cbuf->in_fence_fd = -1;
+-   cbuf->base.buf = cbuf->buf;
+-   return &cbuf->base;
 +   pipe_reference_init(&fence->reference, 1);
 +
 +   return (struct pipe_fence_handle *)fence;
-+}
-+
+ }
+ 
+-static void virgl_drm_cmd_buf_destroy(struct virgl_cmd_buf *_cbuf)
 +static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
 +                                       struct virgl_cmd_buf *_cbuf,
 +                                       struct pipe_fence_handle **fence)
-+{
+ {
 +   struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
-+   struct virgl_drm_cmd_buf *cbuf = virgl_drm_cmd_buf(_cbuf);
+    struct virgl_drm_cmd_buf *cbuf = virgl_drm_cmd_buf(_cbuf);
 +   struct drm_virtgpu_execbuffer eb;
-+   struct drm_virtgpu_vgpu_memory_allocate cmd;
-+   struct drm_virtgpu_vgpu_memory_allocate_resp resp;
 +   int ret;
-+
+ 
+-   virgl_drm_free_res_list(cbuf);
 +   if (cbuf->base.cdw == 0)
 +      return 0;
-+
+ 
+-   FREE(cbuf->buf);
+-   FREE(cbuf);
+-}
 +   memset(&eb, 0, sizeof(struct drm_virtgpu_execbuffer));
 +   eb.command = (uint64_t)(void*)cbuf->buf;
 +   eb.size = cbuf->base.cdw * 4;
@@ -2009,7 +1965,7 @@ index 6ae63e75758..7c580b4cbf1 100644
 +         eb.in_fence_fd = cbuf->in_fence_fd;
 +         eb.flags |= VIRTGPU_EXECBUF_FENCE_FD_IN;
 +      }
-+
+ 
 +      if (fence != NULL) {
 +         eb.out_fence_fd = CreateEvent(NULL, TRUE, FALSE, NULL);
 +         eb.flags |= VIRTGPU_EXECBUF_FENCE_FD_OUT;
@@ -2039,29 +1995,64 @@ index 6ae63e75758..7c580b4cbf1 100644
 +
 +   virgl_drm_clear_res_list(cbuf);
 +
-+   cmd.size = _cbuf->size + cbuf->nres * sizeof(uint32_t);
-+   AllocateVgpuMemory(qdws->fd, &cmd, &resp);
-+
-+   // reset new cmd buf
-+   cbuf->buf = (uint32_t*)resp.address;
-+   cbuf->res_hlist = (uint32_t*)(resp.address + _cbuf->size);
-+   cbuf->base.buf = cbuf->buf;
-+
 +   return ret;
 +}
 +#else
- static struct virgl_cmd_buf *virgl_drm_cmd_buf_create(struct virgl_winsys *qws,
-                                                       uint32_t size)
+ static struct pipe_fence_handle *
+ virgl_drm_fence_create(struct virgl_winsys *vws, int fd, bool external)
  {
-@@ -993,6 +1285,7 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
+@@ -993,6 +1187,50 @@ static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
  
     return ret;
  }
 +#endif
++
++static struct virgl_cmd_buf *virgl_drm_cmd_buf_create(struct virgl_winsys *qws,
++                                                      uint32_t size)
++{
++   struct virgl_drm_cmd_buf *cbuf;
++
++   cbuf = CALLOC_STRUCT(virgl_drm_cmd_buf);
++   if (!cbuf)
++      return NULL;
++
++   cbuf->ws = qws;
++
++   if (!virgl_drm_alloc_res_list(cbuf, 512)) {
++      FREE(cbuf);
++      return NULL;
++   }
++
++   cbuf->buf = CALLOC(size, sizeof(uint32_t));
++   if (!cbuf->buf) {
++      FREE(cbuf->res_hlist);
++      FREE(cbuf->res_bo);
++      FREE(cbuf);
++      return NULL;
++   }
++
++#ifdef _WIN32
++   cbuf->in_fence_fd = NULL;
++#else
++   cbuf->in_fence_fd = -1;
++#endif
++   cbuf->base.buf = cbuf->buf;
++   return &cbuf->base;
++}
++
++static void virgl_drm_cmd_buf_destroy(struct virgl_cmd_buf *_cbuf)
++{
++   struct virgl_drm_cmd_buf *cbuf = virgl_drm_cmd_buf(_cbuf);
++
++   virgl_drm_free_res_list(cbuf);
++
++   FREE(cbuf->buf);
++   FREE(cbuf);
++}
  
  static int virgl_drm_get_caps(struct virgl_winsys *vws,
                                struct virgl_drm_caps *caps)
-@@ -1012,7 +1305,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
+@@ -1012,7 +1250,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        args.cap_set_id = 1;
        args.size = sizeof(struct virgl_caps_v1);
     }
@@ -2070,7 +2061,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  
     ret = drmIoctl(vdws->fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
     if (ret == -1 && errno == EINVAL) {
-@@ -1023,6 +1316,8 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
+@@ -1023,6 +1261,8 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
        if (ret == -1)
            return ret;
     }
@@ -2079,7 +2070,7 @@ index 6ae63e75758..7c580b4cbf1 100644
     return ret;
  }
  
-@@ -1031,8 +1326,15 @@ virgl_cs_create_fence(struct virgl_winsys *vws, int fd)
+@@ -1031,8 +1271,15 @@ virgl_cs_create_fence(struct virgl_winsys *vws, int fd)
  {
     if (!vws->supports_fences)
        return NULL;
@@ -2095,7 +2086,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  }
  
  static bool virgl_fence_wait(struct virgl_winsys *vws,
-@@ -1046,7 +1348,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+@@ -1046,7 +1293,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
        int timeout_poll;
  
        if (timeout == 0)
@@ -2107,7 +2098,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  
        timeout_ms = timeout / 1000000;
        /* round up */
-@@ -1054,8 +1360,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
+@@ -1054,8 +1305,11 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
           timeout_ms++;
  
        timeout_poll = timeout_ms <= INT_MAX ? (int) timeout_ms : -1;
@@ -2120,7 +2111,7 @@ index 6ae63e75758..7c580b4cbf1 100644
     }
  
     if (timeout == 0)
-@@ -1085,7 +1394,11 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
+@@ -1085,7 +1339,11 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
  
     if (pipe_reference(&dfence->reference, &sfence->reference)) {
        if (vws->supports_fences) {
@@ -2132,7 +2123,7 @@ index 6ae63e75758..7c580b4cbf1 100644
        } else {
           virgl_drm_resource_reference(vws, &dfence->hw_res, NULL);
        }
-@@ -1109,7 +1422,12 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
+@@ -1109,7 +1367,12 @@ static void virgl_fence_server_sync(struct virgl_winsys *vws,
     if (!fence->external)
        return;
  
@@ -2145,7 +2136,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  }
  
  static int virgl_fence_get_fd(struct virgl_winsys *vws,
-@@ -1120,10 +1438,19 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
+@@ -1120,10 +1383,19 @@ static int virgl_fence_get_fd(struct virgl_winsys *vws,
     if (!vws->supports_fences)
        return -1;
  
@@ -2165,7 +2156,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  {
  	int ret;
  	drmVersionPtr version;
-@@ -1162,7 +1489,11 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
+@@ -1162,7 +1434,11 @@ virgl_drm_resource_cache_entry_release(struct virgl_resource_cache_entry *entry,
     virgl_hw_res_destroy(qdws, res);
  }
  
@@ -2177,7 +2168,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  {
     int ret;
     struct drm_virtgpu_context_init init = { 0 };
-@@ -1177,7 +1508,7 @@ static int virgl_init_context(int drmFD)
+@@ -1177,7 +1453,7 @@ static int virgl_init_context(int drmFD)
                                params[param_supported_capset_ids].value);
  
     if (!supports_capset_virgl && !supports_capset_virgl2) {
@@ -2186,7 +2177,7 @@ index 6ae63e75758..7c580b4cbf1 100644
        return -EINVAL;
     }
  
-@@ -1186,7 +1517,11 @@ static int virgl_init_context(int drmFD)
+@@ -1186,7 +1462,11 @@ static int virgl_init_context(int drmFD)
                           VIRGL_DRM_CAPSET_VIRGL2 :
                           VIRGL_DRM_CAPSET_VIRGL;
  
@@ -2198,7 +2189,7 @@ index 6ae63e75758..7c580b4cbf1 100644
     init.num_params = 1;
  
     ret = drmIoctl(drmFD, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
-@@ -1203,6 +1538,143 @@ static int virgl_init_context(int drmFD)
+@@ -1203,6 +1483,143 @@ static int virgl_init_context(int drmFD)
     return 0;
  }
  
@@ -2342,7 +2333,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  static struct virgl_winsys *
  virgl_drm_winsys_create(int drmFD)
  {
-@@ -1305,6 +1777,7 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
+@@ -1305,6 +1722,7 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
        pscreen->destroy(pscreen);
     }
  }
@@ -2350,7 +2341,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  
  static uint32_t
  hash_fd(const void *key)
-@@ -1343,6 +1816,50 @@ equal_fd(const void *key1, const void *key2)
+@@ -1343,6 +1761,50 @@ equal_fd(const void *key1, const void *key2)
     return false;
  }
  
@@ -2401,7 +2392,7 @@ index 6ae63e75758..7c580b4cbf1 100644
  struct pipe_screen *
  virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
  {
-@@ -1385,3 +1902,4 @@ unlock:
+@@ -1385,3 +1847,4 @@ unlock:
     mtx_unlock(&virgl_screen_mutex);
     return pscreen;
  }
@@ -2448,10 +2439,10 @@ index f17d89c098b..fa1b6f9f957 100644
     unsigned cres;
 diff --git a/src/gallium/winsys/virgl/lib/ioctl.h b/src/gallium/winsys/virgl/lib/ioctl.h
 new file mode 100644
-index 00000000000..6e70364a3bf
+index 00000000000..4fa845df61b
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/ioctl.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,87 @@
 +/*
 + * MVisor vgpu Device guest driver
 + * Copyright (C) 2022 cair <rui.cai@tenclass.com>
@@ -2538,16 +2529,6 @@ index 00000000000..6e70364a3bf
 +    METHOD_OUT_DIRECT, \
 +    FILE_ANY_ACCESS)
 +
-+#define IOCTL_VIRTIO_VGPU_ALLOCATE_VGPU_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, \
-+    0x812, \
-+    METHOD_OUT_DIRECT, \
-+    FILE_ANY_ACCESS)
-+    
-+#define IOCTL_VIRTIO_VGPU_FREE_VGPU_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, \
-+    0x813, \
-+    METHOD_IN_DIRECT, \
-+    FILE_ANY_ACCESS)
-+
 +#endif
 diff --git a/src/gallium/winsys/virgl/lib/meson.build b/src/gallium/winsys/virgl/lib/meson.build
 new file mode 100644
@@ -2591,10 +2572,10 @@ index 00000000000..6576e0616ef
 +)
 diff --git a/src/gallium/winsys/virgl/lib/vgpu_api.c b/src/gallium/winsys/virgl/lib/vgpu_api.c
 new file mode 100644
-index 00000000000..108d8f94ab5
+index 00000000000..d03cd2ad09f
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/vgpu_api.c
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,263 @@
 +/*
 + * MVisor vgpu Device guest driver
 + * Copyright (C) 2022 cair <rui.cai@tenclass.com>
@@ -2625,321 +2606,245 @@ index 00000000000..108d8f94ab5
 +
 +#include "drm-uapi/virtgpu_drm.h"
 +
-+int drmPrimeHandleToFD(int fd, UINT32 handle, UINT32 flags, int *prime_fd)
-+{
-+    _debug_printf("drmPrimeHandleToFD not implement\n");
-+    return 0;
++
++int drmPrimeHandleToFD(int fd, UINT32 handle, UINT32 flags, int *prime_fd) {
++  _debug_printf("drmPrimeHandleToFD not implement\n");
++  return 0;
 +}
 +
-+int drmPrimeFDToHandle(int fd, int prime_fd, UINT32 *handle)
-+{
-+    _debug_printf("drmPrimeFDToHandle not implement\n");
-+    return 0;
++int drmPrimeFDToHandle(int fd, int prime_fd, UINT32 *handle) {
++  _debug_printf("drmPrimeFDToHandle not implement\n");
++  return 0;
 +}
 +
-+drmVersionPtr drmGetVersion(HANDLE fd)
-+{
-+    drmVersionPtr version = (drmVersionPtr)malloc(sizeof(drmVersion));
-+    if (version)
-+    {
-+        version->version_major = 0;
-+        version->version_minor = 1;
-+        return version;
-+    }
++drmVersionPtr drmGetVersion(HANDLE fd) {
++  drmVersionPtr version = (drmVersionPtr)malloc(sizeof(drmVersion));
++  if (version) {
++    version->version_major = 0;
++    version->version_minor = 1;
++    return version;
++  }
 +
++  return NULL;
++}
++
++void drmFreeVersion(drmVersionPtr ptr) {
++  if (ptr) {
++    free(ptr);
++  }
++}
++
++HANDLE GetHandleFromVgpu(void) {
++  BOOL                              bRet = FALSE;
++  HANDLE                            handle = INVALID_HANDLE_VALUE;
++  HDEVINFO                          hardwareDeviceInfo = NULL;
++  DWORD                             RequiredLength = 0;
++  PSP_DEVICE_INTERFACE_DETAIL_DATA  DeviceInterfaceDetailData = NULL;
++  SP_DEVINFO_DATA                   DevInfoData = {sizeof(SP_DEVINFO_DATA)};
++  SP_DEVICE_INTERFACE_DATA          DeviceInterfaceData;
++
++  hardwareDeviceInfo = SetupDiGetClassDevs(&GUID_DEVINTERFACE_VGPU, NULL, NULL, (DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
++  if (hardwareDeviceInfo == INVALID_HANDLE_VALUE) {
++    _debug_printf("Cannot get class devices.\n");
 +    return NULL;
++  }
++
++  DeviceInterfaceData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
++  bRet = SetupDiEnumDeviceInterfaces(hardwareDeviceInfo, NULL, &GUID_DEVINTERFACE_VGPU, 0, &DeviceInterfaceData);
++  if (!bRet) {
++    _debug_printf("SetupDiEnumDeviceInterfaces failed err=%d.\n", GetLastError());
++    return NULL;
++  }
++
++  SetupDiGetDeviceInterfaceDetail(hardwareDeviceInfo, &DeviceInterfaceData, NULL, 0, &RequiredLength, NULL);
++  assert(RequiredLength > 0);
++
++  DeviceInterfaceDetailData = (PSP_DEVICE_INTERFACE_DETAIL_DATA)malloc(RequiredLength);
++  if (DeviceInterfaceDetailData == NULL) {
++    _debug_printf("Cannot allocate memory.\n");
++    return NULL;
++  }
++
++  DeviceInterfaceDetailData->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA);
++  bRet = SetupDiGetDeviceInterfaceDetail(hardwareDeviceInfo, &DeviceInterfaceData, 
++    DeviceInterfaceDetailData, RequiredLength, NULL, &DevInfoData);
++  if (!bRet) {
++    _debug_printf("SetupDiGetDeviceInterfaceDetail failed err=%d.\n", GetLastError());
++    return NULL;
++  }
++
++  handle = CreateFile(DeviceInterfaceDetailData->DevicePath,
++                      GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING,
++                      FILE_ATTRIBUTE_NORMAL, NULL);
++  if (handle == INVALID_HANDLE_VALUE) {
++    _debug_printf("CreateFile failed err=%d.\n", GetLastError());
++    return NULL;
++  }
++
++  free((PVOID)DeviceInterfaceDetailData);
++  SetupDiDestroyDeviceInfoList(hardwareDeviceInfo);
++  return handle;
 +}
 +
-+void drmFreeVersion(drmVersionPtr ptr)
-+{
-+    if (ptr)
-+    {
-+        free(ptr);
-+    }
++static int ctl_get_param(HANDLE handle, struct drm_virtgpu_getparam *getparam) {
++  if (!DeviceIoControl(handle,
++                       IOCTL_VIRTIO_VGPU_GETPARAM,
++                       &getparam->param, sizeof(uint64_t),
++                       (void *)getparam->value, sizeof(uint64_t),
++                       NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_GETPARAM failed=%d\n", GetLastError());
++    return -1;
++  }
++
++  return 0;
 +}
 +
-+HANDLE GetHandleFromVgpu(void)
-+{
-+    BOOL bRet = FALSE;
-+    HANDLE handle = INVALID_HANDLE_VALUE;
-+    HDEVINFO HardwareDeviceInfo = NULL;
-+    DWORD RequiredLength = 0;
-+    PSP_DEVICE_INTERFACE_DETAIL_DATA DeviceInterfaceDetailData = NULL;
-+    SP_DEVINFO_DATA DevInfoData = {sizeof(SP_DEVINFO_DATA)};
-+    SP_DEVICE_INTERFACE_DATA DeviceInterfaceData;
++static int ctl_get_caps(HANDLE handle, struct drm_virtgpu_get_caps *getcaps) {
++  if (!DeviceIoControl(handle, 
++                       IOCTL_VIRTIO_VGPU_GET_CAPS, 
++                       &getcaps->cap_set_id, sizeof(uint32_t) * 2, 
++                       (void *)getcaps->addr, getcaps->size, 
++                       NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_GET_CAPS failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    HardwareDeviceInfo = SetupDiGetClassDevs(
-+        &GUID_DEVINTERFACE_VGPU,
-+        NULL,
-+        NULL,
-+        (DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
-+
-+    if (HardwareDeviceInfo == INVALID_HANDLE_VALUE)
-+    {
-+        _debug_printf("Cannot get class devices.\n");
-+        return NULL;
-+    }
-+
-+    DeviceInterfaceData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
-+    bRet = SetupDiEnumDeviceInterfaces(HardwareDeviceInfo, NULL, &GUID_DEVINTERFACE_VGPU, 0, &DeviceInterfaceData);
-+    if (!bRet)
-+    {
-+        _debug_printf("SetupDiEnumDeviceInterfaces failed err=%d.\n", GetLastError());
-+        return NULL;
-+    }
-+
-+    SetupDiGetDeviceInterfaceDetail(HardwareDeviceInfo, &DeviceInterfaceData, NULL, 0, &RequiredLength, NULL);
-+    assert(RequiredLength > 0);
-+
-+    DeviceInterfaceDetailData = (PSP_DEVICE_INTERFACE_DETAIL_DATA)malloc(RequiredLength);
-+    if (DeviceInterfaceDetailData == NULL)
-+    {
-+        _debug_printf("Cannot allocate memory.\n");
-+        return NULL;
-+    }
-+
-+    DeviceInterfaceDetailData->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA);
-+    bRet = SetupDiGetDeviceInterfaceDetail(
-+        HardwareDeviceInfo,
-+        &DeviceInterfaceData,
-+        DeviceInterfaceDetailData,
-+        RequiredLength,
-+        NULL,
-+        &DevInfoData);
-+    if (!bRet)
-+    {
-+        _debug_printf("SetupDiGetDeviceInterfaceDetail failed err=%d.\n", GetLastError());
-+        return NULL;
-+    }
-+
-+    handle = CreateFile(DeviceInterfaceDetailData->DevicePath, GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-+    if (handle == INVALID_HANDLE_VALUE)
-+    {
-+        _debug_printf("CreateFile failed err=%d.\n", GetLastError());
-+        assert(0);
-+    }
-+
-+    free((PVOID)DeviceInterfaceDetailData);
-+    SetupDiDestroyDeviceInfoList(HardwareDeviceInfo);
-+    return handle;
++  return 0;
 +}
 +
-+static int ctl_get_param(HANDLE handle, struct drm_virtgpu_getparam *getparam)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_GETPARAM, &getparam->param, sizeof(uint64_t),
-+                               (void *)getparam->value, sizeof(uint64_t), &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_GETPARAM failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_create_resource(HANDLE handle, struct drm_virtgpu_resource_create *createcmd) {
++  if (!DeviceIoControl(handle, 
++                       IOCTL_VIRTIO_VGPU_RESOURCE_CREATE, 
++                       createcmd, sizeof(*createcmd), 
++                       (void *)&createcmd->bo_handle, sizeof(uint32_t) * 2, 
++                       NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_RESOURCE_CREATE failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_get_caps(HANDLE handle, struct drm_virtgpu_get_caps *getcaps)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_GET_CAPS, &getcaps->cap_set_id, sizeof(uint32_t) * 2,
-+                               (void *)getcaps->addr, getcaps->size, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_GET_CAPS failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_create_blob_resource(HANDLE handle, struct drm_virtgpu_resource_create_blob *createcmd) {
++  if (!DeviceIoControl(handle, 
++                       IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE,
++                       createcmd, sizeof(*createcmd), 
++                       (void *)&createcmd->bo_handle, sizeof(uint32_t) * 2,
++                       NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_create_resource(HANDLE handle, struct drm_virtgpu_resource_create *createcmd)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_RESOURCE_CREATE, createcmd, sizeof(*createcmd),
-+                               (void *)&createcmd->bo_handle, sizeof(uint32_t) * 2, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_RESOURCE_CREATE failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_submit_command(HANDLE handle, struct drm_virtgpu_execbuffer *eb) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_EXECBUFFER, eb, sizeof(*eb), NULL, 0, NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_EXECBUFFER failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_create_blob_resource(HANDLE handle, struct drm_virtgpu_resource_create_blob *createcmd)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE, createcmd, sizeof(*createcmd),
-+                               (void *)&createcmd->bo_handle, sizeof(uint32_t) * 2, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_BLOB_RESOURCE_CREATE failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_close_resource(HANDLE handle, struct drm_gem_close *close) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_RESOURCE_CLOSE, close, sizeof(*close), NULL, 0, NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_RESOURCE_CLOSE failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_submit_command(HANDLE handle, struct drm_virtgpu_execbuffer *eb)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_EXECBUFFER, eb, sizeof(*eb), NULL, 0, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_EXECBUFFER failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_wait_resource(HANDLE handle, struct drm_virtgpu_3d_wait *wait) {
++  ULONG32 result;
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_WAIT, wait, sizeof(*wait), &result, sizeof(ULONG32), NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_WAIT failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return result;
 +}
 +
-+static int ctl_close_resource(HANDLE handle, struct drm_gem_close *close)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_RESOURCE_CLOSE, close, sizeof(*close), NULL, 0, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_RESOURCE_CLOSE failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_map_resource(HANDLE handle, struct drm_virtgpu_map *map) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_MAP, map, sizeof(*map), &map->offset, sizeof(ULONG64), NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_MAP failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_wait_resource(HANDLE handle, struct drm_virtgpu_3d_wait *wait)
-+{
-+    DWORD BytesReturned;
-+    ULONG32 result;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_WAIT, wait, sizeof(*wait), &result, sizeof(ULONG32), &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_WAIT failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_transfer_to_host(HANDLE handle, struct drm_virtgpu_3d_transfer *transfer) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_TRANSFER_TO_HOST, transfer, sizeof(*transfer), NULL, 0, NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_TRANSFER_TO_HOST failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return result;
++  return 0;
 +}
 +
-+static int ctl_map_resource(HANDLE handle, struct drm_virtgpu_map *map)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_MAP, map, sizeof(*map), &map->offset, sizeof(ULONG64), &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_MAP failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_transfer_from_host(HANDLE handle, struct drm_virtgpu_3d_transfer *transfer) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_TRANSFER_FROM_HOST, transfer, sizeof(*transfer), NULL, 0, NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_TRANSFER_FROM_HOST failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_transfer_to_host(HANDLE handle, struct drm_virtgpu_3d_transfer *transfer)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_TRANSFER_TO_HOST, transfer, sizeof(*transfer), NULL, 0, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_TRANSFER_TO_HOST failed=%d\n", GetLastError());
-+        return -1;
-+    }
++static int ctl_context_init(HANDLE handle, struct drm_virtgpu_context_init *init) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_CONTEXT_INIT, init, sizeof(*init), NULL, 0, NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_CONTEXT_INIT failed=%d\n", GetLastError());
++    return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 +
-+static int ctl_transfer_from_host(HANDLE handle, struct drm_virtgpu_3d_transfer *transfer)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_TRANSFER_FROM_HOST, transfer, sizeof(*transfer), NULL, 0, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_TRANSFER_FROM_HOST failed=%d\n", GetLastError());
-+        return -1;
-+    }
-+
-+    return 0;
++void DestroyVirglContext(HANDLE handle) {
++  if (!DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_DESTROY_CONTEXT, NULL, 0, NULL, 0, NULL, NULL)) {
++    _debug_printf("IOCTL_VIRTIO_VGPU_DESTROY_CONTEXT failed=%d\n", GetLastError());
++  }
 +}
 +
-+static int ctl_context_init(HANDLE handle, struct drm_virtgpu_context_init *init)
-+{
-+    DWORD BytesReturned;
-+    BOOL ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_CONTEXT_INIT, init, sizeof(*init), NULL, 0, &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_CONTEXT_INIT failed=%d\n", GetLastError());
-+        return -1;
-+    }
-+
-+    return 0;
-+}
-+
-+void DestroyVirglContext(HANDLE handle)
-+{
-+    bool ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_DESTROY_CONTEXT, NULL, 0, NULL, 0, NULL, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_DESTROY_CONTEXT failed=%d\n", GetLastError());
-+    }
-+}
-+
-+void AllocateVgpuMemory(HANDLE handle, void *cmd, void *resp)
-+{
-+    DWORD BytesReturned;
-+    bool ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_ALLOCATE_VGPU_MEMORY, 
-+        cmd, sizeof(struct drm_virtgpu_vgpu_memory_allocate), resp, sizeof(struct drm_virtgpu_vgpu_memory_allocate_resp), &BytesReturned, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_ALLOCATE_VGPU_MEMORY failed=%d\n", GetLastError());
-+    }
-+}
-+
-+void FreeVgpuMemory(HANDLE handle, void *cmd)
-+{
-+    bool ret = DeviceIoControl(handle, IOCTL_VIRTIO_VGPU_FREE_VGPU_MEMORY, cmd, sizeof(struct drm_virtgpu_vgpu_memory_free), NULL, 0, NULL, NULL);
-+    if (!ret)
-+    {
-+        _debug_printf("IOCTL_VIRTIO_VGPU_FREE_VGPU_MEMORY failed=%d\n", GetLastError());
-+    }
-+}
-+
-+int drmIoctl(HANDLE handle, unsigned long request, void *arg)
-+{
-+    switch (request)
-+    {
++int drmIoctl(HANDLE handle, unsigned long request, void *arg) {
++  switch (request) {
 +    case DRM_IOCTL_VIRTGPU_CONTEXT_INIT:
-+        return ctl_context_init(handle, arg);
++      return ctl_context_init(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_GETPARAM:
-+        return ctl_get_param(handle, arg);
++      return ctl_get_param(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_GET_CAPS:
-+        return ctl_get_caps(handle, arg);
++      return ctl_get_caps(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_RESOURCE_CREATE:
-+        return ctl_create_resource(handle, arg);
++      return ctl_create_resource(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB:
-+        return ctl_create_blob_resource(handle, arg);
++      return ctl_create_blob_resource(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_EXECBUFFER:
-+        return ctl_submit_command(handle, arg);
++      return ctl_submit_command(handle, arg);
 +    case DRM_IOCTL_GEM_CLOSE:
-+        return ctl_close_resource(handle, arg);
++      return ctl_close_resource(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_WAIT:
-+        return ctl_wait_resource(handle, arg);
++      return ctl_wait_resource(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_MAP:
-+        return ctl_map_resource(handle, arg);
++      return ctl_map_resource(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST:
-+        return ctl_transfer_from_host(handle, arg);
++      return ctl_transfer_from_host(handle, arg);
 +    case DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST:
-+        return ctl_transfer_to_host(handle, arg);
++      return ctl_transfer_to_host(handle, arg);
 +    default:
-+        _debug_printf("drmIoctl not implement handle=0x%lx request=0x%x\n", handle, request);
-+        return -1;
-+    }
++      _debug_printf("drmIoctl not implement handle=0x%lx request=0x%x\n", handle, request);
++      return -1;
++  }
 +
-+    return 0;
++  return 0;
 +}
 diff --git a/src/gallium/winsys/virgl/lib/vgpu_api.h b/src/gallium/winsys/virgl/lib/vgpu_api.h
 new file mode 100644
-index 00000000000..378471250a7
+index 00000000000..01c00ed9df2
 --- /dev/null
 +++ b/src/gallium/winsys/virgl/lib/vgpu_api.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,46 @@
 +/*
 + * MVisor vgpu Device guest driver
 + * Copyright (C) 2022 cair <rui.cai@tenclass.com>
@@ -2981,12 +2886,10 @@ index 00000000000..378471250a7
 +int drmIoctl(HANDLE fd, unsigned long request, void *arg);
 +int drmPrimeHandleToFD(int fd, UINT32 handle, UINT32 flags, int *prime_fd);
 +int drmPrimeFDToHandle(int fd, int prime_fd, UINT32 *handle);
-+drmVersionPtr drmGetVersion(HANDLE fd);
 +void drmFreeVersion(drmVersionPtr ptr);
-+HANDLE GetHandleFromVgpu(void);
 +void DestroyVirglContext(HANDLE handle);
-+void AllocateVgpuMemory(HANDLE handle, void *cmd, void *resp);
-+void FreeVgpuMemory(HANDLE handle, void *cmd);
++HANDLE GetHandleFromVgpu(void);
++drmVersionPtr drmGetVersion(HANDLE fd);
 +#endif
 diff --git a/src/mesa/main/version.c b/src/mesa/main/version.c
 index 2f36a44ddee..2bccb107c10 100644
@@ -3002,5 +2905,5 @@ index 2f36a44ddee..2bccb107c10 100644
  		     ctx->Version / 10, ctx->Version % 10,
  		     _mesa_is_desktop_gl_core(ctx) ? " (Core Profile)" :
 -- 
-2.38.1.windows.1
+2.29.2.windows.2
 

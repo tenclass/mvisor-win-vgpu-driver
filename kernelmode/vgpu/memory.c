@@ -18,6 +18,7 @@
 
 #include "memory.h"
 
+
 #define BITMAP_FAILED 0xFFFFFFFF
 
 typedef struct _VGPU_MEMORY {
@@ -72,6 +73,7 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
 {
     KIRQL   savedIrql;
     ULONG   index;
+    ULONG   page;
     ULONG64 offset;
 
     ASSERT(VgpuMemory.bInitialize);
@@ -82,18 +84,20 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
         return FALSE;
     }
 
+    page = (ULONG)(Size / PAGE_SIZE);
+
     // start processing
     SpinLock(&savedIrql, &VgpuMemory.SpinLock);
 
-    index = RtlFindClearBitsAndSet(&VgpuMemory.RegionBitmap, (ULONG)(Size / PAGE_SIZE), VgpuMemory.LastFreeIndex);
+    index = RtlFindClearBitsAndSet(&VgpuMemory.RegionBitmap, page, VgpuMemory.LastFreeIndex);
     if (index == BITMAP_FAILED)
     {
         SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-        VGPU_DEBUG_PRINT("WRONG: can't find the node to allocate");
+        VGPU_DEBUG_PRINT("WRONG: can't find the bits to allocate");
         return FALSE;
     }
 
-    // update available size
+    VgpuMemory.LastFreeIndex = index + page;
     VgpuMemory.AvailableMemorySize -= Size;
 
     // finish processing
@@ -118,11 +122,15 @@ VOID FreeVgpuMemory(PVOID VitrualAddress, SIZE_T Size)
     // start processing
     SpinLock(&savedIrql, &VgpuMemory.SpinLock);
 
-    index = RtlFindSetBitsAndClear(&VgpuMemory.RegionBitmap, (ULONG)(Size / PAGE_SIZE), (ULONG)(((PUINT8)VitrualAddress - VgpuMemory.VirtualAddress) / PAGE_SIZE));
+    index = RtlFindSetBitsAndClear(
+        &VgpuMemory.RegionBitmap, 
+        (ULONG)(Size / PAGE_SIZE),
+        (ULONG)(((PUINT8)VitrualAddress - VgpuMemory.VirtualAddress) / PAGE_SIZE));
+
     if (index == BITMAP_FAILED)
     {
         SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-        VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
+        VGPU_DEBUG_PRINT("WRONG: can't find the bits to free");
         return;
     }
 
@@ -158,11 +166,15 @@ BOOLEAN ReallocVgpuMemory(PVOID VitrualAddress, SIZE_T OriginSize, SIZE_T Target
     // start processing
     SpinLock(&savedIrql, &VgpuMemory.SpinLock);
 
-    index = RtlFindSetBitsAndClear(&VgpuMemory.RegionBitmap, (ULONG)(change / PAGE_SIZE), (ULONG)(((PUINT8)VitrualAddress - VgpuMemory.VirtualAddress + TargetSize) / PAGE_SIZE));
+    index = RtlFindSetBitsAndClear(
+        &VgpuMemory.RegionBitmap, 
+        (ULONG)(change / PAGE_SIZE),
+        (ULONG)(((PUINT8)VitrualAddress - VgpuMemory.VirtualAddress + TargetSize) / PAGE_SIZE));
+
     if (index == BITMAP_FAILED)
     {
         SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-        VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
+        VGPU_DEBUG_PRINT("WRONG: can't find the bits to free");
         return FALSE;
     }
 

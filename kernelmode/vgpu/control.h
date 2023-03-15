@@ -20,25 +20,6 @@
 #include "ioctl.h"
 
 
-FORCEINLINE PVGPU_MEMORY_NODE GetVgpuMemoryNodeFromListUnsafe(PVIRGL_CONTEXT VirglContext, PVOID UserAddress)
-{
-    PLIST_ENTRY         item;
-    BOOLEAN             bFind = FALSE;
-    PVGPU_MEMORY_NODE   memoryNode = NULL;
-
-    for (item = VirglContext->VgpuMemoryNodeList.Flink; item != &VirglContext->VgpuMemoryNodeList; item = item->Flink)
-    {
-        memoryNode = CONTAINING_RECORD(item, VGPU_MEMORY_NODE, Entry);
-        if (memoryNode->Buffer.Share.UserAdderss == UserAddress)
-        {
-            bFind = TRUE;
-            break;
-        }
-    }
-
-    return bFind ? memoryNode : NULL;
-}
-
 FORCEINLINE PVIRGL_RESOURCE GetResourceFromListUnsafe(PVIRGL_CONTEXT VirglContext, ULONG32 Id)
 {
     PLIST_ENTRY     item;
@@ -114,7 +95,6 @@ FORCEINLINE VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, PULONG32 Resou
     }
 }
 
-VOID UpdateResourceState(PVIRGL_CONTEXT VirglContext, PULONG32 ResourceIds, SIZE_T ResourceIdsCount, BOOLEAN Busy, ULONG64 FenceId);
 VOID MapBlobResourceCallback(PVIRGL_CONTEXT VirglContext, ULONG32 Id, ULONG64 Gpa, SIZE_T Size);
 PVIRGL_CONTEXT GetVirglContextFromList(ULONG32 VirglContextId);
 PVIRGL_RESOURCE GetResourceFromList(PVIRGL_CONTEXT VirglContext, ULONG32 Id);
