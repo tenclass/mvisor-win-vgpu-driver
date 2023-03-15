@@ -18,169 +18,63 @@
 
 #include "memory.h"
 
+#define BITMAP_FAILED 0xFFFFFFFF
+
 typedef struct _VGPU_MEMORY {
-    BOOLEAN                 bInitialize;
-    PUINT8                  VirtualAddress;
-    PHYSICAL_ADDRESS        PhysicalAddress;
-    SIZE_T                  TotalMemorySize;
-    SIZE_T                  AvailableMemorySize;
-    LIST_ENTRY              UsedList;
-    ULONG64                 UsedRegionBegin;
-    ULONG64                 UsedRegionEnd;
-    KSPIN_LOCK              SpinLock;
-    LOOKASIDE_LIST_EX       LookAsideList;
+    BOOLEAN             bInitialize;
+    PUINT8              VirtualAddress;
+    PHYSICAL_ADDRESS    PhysicalAddress;
+    SIZE_T              AvailableMemorySize;
+    KSPIN_LOCK          SpinLock;
+    RTL_BITMAP          RegionBitmap;
+    PVOID               RegionBitmapBuffer;
+    ULONG               LastFreeIndex;
 }VGPU_MEMORY, * PVGPU_MEMORY;
 
-typedef struct _MEMORY_NODE {
-    ULONG64     Begin;
-    ULONG64     End;
-    SIZE_T      Size;
-    LIST_ENTRY  Entry;
-}MEMORY_NODE, * PMEMORY_NODE;
-
-typedef enum _NODE_POSITION {
-    LEFT,
-    MIDDLE,
-    RIGHT
-}NODE_POSITION;
-
-static VGPU_MEMORY VgpuMemory;
+static VGPU_MEMORY VgpuMemory = { 0 };
 
 VOID InitializeVgpuMemory(PVOID VitrualAddress, PHYSICAL_ADDRESS PhysicalAddress, SIZE_T Size)
 {
-    if (VgpuMemory.bInitialize)
+    ASSERT(!VgpuMemory.bInitialize);
+
+    // 32K Align
+    ASSERT(Size % (PAGE_SIZE * 8) == 0);
+
+    VgpuMemory.RegionBitmapBuffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, Size / PAGE_SIZE / 8, VIRTIO_VGPU_MEMORY_TAG);
+    if (!VgpuMemory.RegionBitmapBuffer)
     {
+        VGPU_DEBUG_PRINT("WRONG: allocate bitmap buffer failed");
         return;
     }
 
+    KeInitializeSpinLock(&VgpuMemory.SpinLock);
+    RtlInitializeBitMap(&VgpuMemory.RegionBitmap, VgpuMemory.RegionBitmapBuffer, (ULONG)(Size / PAGE_SIZE));
+    RtlClearAllBits(&VgpuMemory.RegionBitmap);
+
     VgpuMemory.VirtualAddress = VitrualAddress;
     VgpuMemory.PhysicalAddress = PhysicalAddress;
-    VgpuMemory.TotalMemorySize = Size;
     VgpuMemory.AvailableMemorySize = Size;
-    VgpuMemory.UsedRegionBegin = 0;
-    VgpuMemory.UsedRegionEnd = 0;
     VgpuMemory.bInitialize = TRUE;
-
-    ExInitializeLookasideListEx(
-        &VgpuMemory.LookAsideList,
-        NULL,
-        NULL,
-        NonPagedPool,
-        0,
-        sizeof(MEMORY_NODE),
-        VIRTIO_VGPU_MEMORY_TAG,
-        0
-    );
-    InitializeListHead(&VgpuMemory.UsedList);
-    KeInitializeSpinLock(&VgpuMemory.SpinLock);
+    VgpuMemory.LastFreeIndex = 0;
 
     VGPU_DEBUG_LOG("init vgpu memory va=%p gpa=0x%llx size=0x%llx", VitrualAddress, PhysicalAddress.QuadPart, Size);
 }
 
 VOID UninitializeVgpuMemory()
 {
-    KIRQL           savedIrql;
-    PLIST_ENTRY     item;
-    PMEMORY_NODE    node;
+    ASSERT(VgpuMemory.bInitialize);
 
-    if (!VgpuMemory.bInitialize)
-    {
-        return;
-    }
-
-    SpinLock(&savedIrql, &VgpuMemory.SpinLock);
-    while (!IsListEmpty(&VgpuMemory.UsedList)) {
-        item = RemoveHeadList(&VgpuMemory.UsedList);
-        node = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
-        ExFreeToLookasideListEx(&VgpuMemory.LookAsideList, node);
-    }
-    SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-
-    ExDeleteLookasideListEx(&VgpuMemory.LookAsideList);
+    ExFreePoolWithTag(VgpuMemory.RegionBitmapBuffer, VIRTIO_VGPU_MEMORY_TAG);
     RtlZeroMemory(&VgpuMemory, sizeof(VGPU_MEMORY));
 }
 
-VOID FreeVgpuMemory(PVOID VitrualAddress)
-{
-    KIRQL           savedIrql;
-    PLIST_ENTRY     item;
-    ULONG64         offset;
-    PMEMORY_NODE    tmp;
-    PMEMORY_NODE    node = NULL;
-    BOOLEAN         bFind = FALSE;
-
-    if (!VgpuMemory.bInitialize)
-    {
-        return;
-    }
-    offset = (PUINT8)VitrualAddress - VgpuMemory.VirtualAddress;
-
-    // start processing
-    SpinLock(&savedIrql, &VgpuMemory.SpinLock);
-
-    // find the target node by offset
-    for (item = VgpuMemory.UsedList.Flink; item != &VgpuMemory.UsedList; item = item->Flink)
-    {
-        node = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
-        if (node->Begin == offset)
-        {
-            bFind = TRUE;
-            break;
-        }
-    }
-
-    if (!bFind)
-    {
-        SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-        VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
-        return;
-    }
-
-    // if the node was the first or last one in the list, update the used region
-    if (node->Entry.Blink == &VgpuMemory.UsedList && node->Entry.Flink != &VgpuMemory.UsedList)
-    {
-        tmp = CONTAINING_RECORD(node->Entry.Flink, MEMORY_NODE, Entry);
-        VgpuMemory.UsedRegionBegin = tmp->Begin;
-    }
-    else if (node->Entry.Flink == &VgpuMemory.UsedList && node->Entry.Blink != &VgpuMemory.UsedList)
-    {
-        tmp = CONTAINING_RECORD(node->Entry.Blink, MEMORY_NODE, Entry);
-        VgpuMemory.UsedRegionEnd = tmp->End;
-    }
-
-    // remove the target node
-    if (RemoveEntryListUnsafe(&node->Entry))
-    {
-        // if list was empty, reset used region
-        VgpuMemory.UsedRegionBegin = 0;
-        VgpuMemory.UsedRegionEnd = 0;
-    }
-
-    // update available size
-    VgpuMemory.AvailableMemorySize += node->Size;
-
-    // end processing
-    SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-
-    // release target node
-    ExFreeToLookasideListEx(&VgpuMemory.LookAsideList, node);
-    VGPU_DEBUG_LOG("VGPU available memory size=0x%llx", VgpuMemory.AvailableMemorySize);
-}
-
-
 BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
 {
-    KIRQL           savedIrql;
-    PMEMORY_NODE    tmp;
-    PMEMORY_NODE    node;
-    ULONG64         offset;
-    NODE_POSITION   position;
-    PLIST_ENTRY     item = NULL;
+    KIRQL   savedIrql;
+    ULONG   index;
+    ULONG64 offset;
 
-    if (!VgpuMemory.bInitialize)
-    {
-        return FALSE;
-    }
+    ASSERT(VgpuMemory.bInitialize);
 
     if (Size > VgpuMemory.AvailableMemorySize)
     {
@@ -188,81 +82,15 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
         return FALSE;
     }
 
-    node = ExAllocateFromLookasideListEx(&VgpuMemory.LookAsideList);
-    if (!node)
-    {
-        VGPU_DEBUG_PRINT("WRONG: allocate node memory failed");
-        return FALSE;
-    }
-    node->Size = Size;
-
     // start processing
     SpinLock(&savedIrql, &VgpuMemory.SpinLock);
-    
-    if (VgpuMemory.UsedRegionBegin >= Size)
+
+    index = RtlFindClearBitsAndSet(&VgpuMemory.RegionBitmap, (ULONG)(Size / PAGE_SIZE), VgpuMemory.LastFreeIndex);
+    if (index == BITMAP_FAILED)
     {
-        position = LEFT;
-        offset = VgpuMemory.UsedRegionBegin - Size;
-    }
-    else if (VgpuMemory.TotalMemorySize - VgpuMemory.UsedRegionEnd >= Size)
-    {
-        position = RIGHT;
-        offset = VgpuMemory.UsedRegionEnd;
-    }
-    else
-    {
-        position = MIDDLE;
-        offset = 0;
-
-        // the unused region can't satisfy the require size directly, so we scan the used list to find unused hole region
-        for (item = VgpuMemory.UsedList.Flink; item != &VgpuMemory.UsedList; item = item->Flink)
-        {
-            tmp = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
-
-            // if overlaped with current used node, continue
-            if (offset < tmp->End && offset + Size > tmp->Begin)
-            {
-                offset = tmp->End;
-                continue;
-            }
-
-            // get the unused hole region, jump out
-            break;
-        }
-
-        if (item == &VgpuMemory.UsedList)
-        {
-            SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
-            VGPU_DEBUG_PRINT("WRONG: we can't locate the suitable region, never reach here");
-            return FALSE;
-        }
-    }
-
-    // now we get the suitable offset for target region
-    node->Begin = offset;
-    node->End = offset + Size;
-
-    // insert the node into the used list
-    switch (position)
-    {
-    case LEFT:
-        InsertHeadList(&VgpuMemory.UsedList, &node->Entry);
-        VgpuMemory.UsedRegionBegin = node->Begin;
-        break;
-    case MIDDLE:
-        ASSERT(item != NULL);
-        // get the right region between used nodes
-        node->Entry.Blink = item->Blink;
-        node->Entry.Flink = item;
-
-        // repair the list Entry
-        item->Blink->Flink = &node->Entry;
-        item->Blink = &node->Entry;
-        break;
-    case RIGHT:
-        InsertTailList(&VgpuMemory.UsedList, &node->Entry);
-        VgpuMemory.UsedRegionEnd = node->End;
-        break;
+        SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
+        VGPU_DEBUG_PRINT("WRONG: can't find the node to allocate");
+        return FALSE;
     }
 
     // update available size
@@ -271,75 +99,78 @@ BOOLEAN AllocateVgpuMemory(SIZE_T Size, PMEMORY_DESCRIPTOR Memory)
     // finish processing
     SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
 
+    offset = (ULONG64)index * PAGE_SIZE;
+
     // return the suitable memory region
     Memory->PhysicalAddress.QuadPart = VgpuMemory.PhysicalAddress.QuadPart + offset;
     Memory->VirtualAddress = VgpuMemory.VirtualAddress + offset;
 
-    VGPU_DEBUG_LOG("position=%d UsedRegionBegin=0x%llx UsedRegionEnd=0x%llx", position, VgpuMemory.UsedRegionBegin, VgpuMemory.UsedRegionEnd);
     return TRUE;
 }
 
-VOID ReallocVgpuMemory(PVOID VitrualAddress, SIZE_T Size)
+VOID FreeVgpuMemory(PVOID VitrualAddress, SIZE_T Size)
 {
-    KIRQL           savedIrql;
-    PLIST_ENTRY     item;
-    ULONG64         offset;
-    PMEMORY_NODE    node = NULL;
-    BOOLEAN         bFind = FALSE;
-    SIZE_T          change;
+    KIRQL savedIrql;
+    ULONG index;
 
-    if (!VgpuMemory.bInitialize)
-    {
-        return;
-    }
-    offset = (PUINT8)VitrualAddress - VgpuMemory.VirtualAddress;
+    ASSERT(VgpuMemory.bInitialize);
 
     // start processing
     SpinLock(&savedIrql, &VgpuMemory.SpinLock);
 
-    // find the target node by offset
-    for (item = VgpuMemory.UsedList.Flink; item != &VgpuMemory.UsedList; item = item->Flink)
+    index = RtlFindSetBitsAndClear(&VgpuMemory.RegionBitmap, (ULONG)(Size / PAGE_SIZE), (ULONG)(((PUINT8)VitrualAddress - VgpuMemory.VirtualAddress) / PAGE_SIZE));
+    if (index == BITMAP_FAILED)
     {
-        node = CONTAINING_RECORD(item, MEMORY_NODE, Entry);
-        if (node->Begin == offset)
-        {
-            bFind = TRUE;
-            break;
-        }
-    }
-
-    if (!bFind)
-    {
+        SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
         VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
-        goto end;
+        return;
     }
 
-    if (node->Size == Size)
-    {
-        goto end;
-    }
-    else if (node->Size < Size)
-    {
-        VGPU_DEBUG_PRINT("WRONG: expanding current node was not implemented");
-        goto end;
-    }
-    else
-    {
-        change = node->Size - Size;
-        node->End -= change;
-        node->Size -= change;
+    VgpuMemory.LastFreeIndex = index;
+    VgpuMemory.AvailableMemorySize += Size;
 
-        // if last node, update the used region
-        if (node->Entry.Flink == &VgpuMemory.UsedList)
-        {
-            VgpuMemory.UsedRegionEnd = node->End;
-        }
-
-        // update available size
-        VgpuMemory.AvailableMemorySize += change;
-    }
-
- end:
     // end processing
     SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
+
+    VGPU_DEBUG_LOG("VGPU available memory size=0x%llx", VgpuMemory.AvailableMemorySize);
+}
+
+BOOLEAN ReallocVgpuMemory(PVOID VitrualAddress, SIZE_T OriginSize, SIZE_T TargetSize)
+{
+    KIRQL   savedIrql;
+    ULONG   index;
+    SIZE_T  change;
+
+    ASSERT(VgpuMemory.bInitialize);
+
+    if (OriginSize == TargetSize)
+    {
+        return FALSE;
+    }
+    else if (OriginSize < TargetSize)
+    {
+        VGPU_DEBUG_PRINT("WRONG: expanding size was not implemented");
+        return FALSE;
+    }
+
+    change = OriginSize - TargetSize;
+
+    // start processing
+    SpinLock(&savedIrql, &VgpuMemory.SpinLock);
+
+    index = RtlFindSetBitsAndClear(&VgpuMemory.RegionBitmap, (ULONG)(change / PAGE_SIZE), (ULONG)(((PUINT8)VitrualAddress - VgpuMemory.VirtualAddress + TargetSize) / PAGE_SIZE));
+    if (index == BITMAP_FAILED)
+    {
+        SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
+        VGPU_DEBUG_PRINT("WRONG: can't find the node to free");
+        return FALSE;
+    }
+
+    VgpuMemory.LastFreeIndex = index;
+    VgpuMemory.AvailableMemorySize += change;
+
+    // end processing
+    SpinUnLock(savedIrql, &VgpuMemory.SpinLock);
+
+    return TRUE;
 }

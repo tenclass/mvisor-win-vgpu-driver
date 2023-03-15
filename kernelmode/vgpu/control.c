@@ -149,7 +149,7 @@ VOID DeleteResource(PVIRGL_CONTEXT VirglContext, PVIRGL_RESOURCE Resource)
         else
         {
             DetachResourceBacking(VirglContext->DeviceContext, Resource);
-            FreeVgpuMemory(Resource->Buffer.Memory.VirtualAddress);
+            FreeVgpuMemory(Resource->Buffer.Memory.VirtualAddress, Resource->Buffer.Size);
         }
     }
 
@@ -398,7 +398,7 @@ NTSTATUS CtlDestroyVirglContext(IN PVIRGL_CONTEXT VirglContext)
         memoryNode = CONTAINING_RECORD(item, VGPU_MEMORY_NODE, Entry);
 
         DeleteUserShareMemory(&memoryNode->Buffer.Share);
-        FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress);
+        FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, memoryNode->Buffer.Size);
         ExFreeToLookasideListEx(&VirglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
     }
     SpinUnLock(savedIrql, &VirglContext->VgpuMemoryNodeListSpinLock);
@@ -882,6 +882,7 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
     PVOID                           outFence = NULL;
     PVOID                           boHandles = NULL;
     SIZE_T                          boHandlesSize;
+    SIZE_T                          alignSize;
     PVIRGL_CONTEXT                  virglContext;
     PVGPU_MEMORY_NODE               memoryNode;
     struct drm_virtgpu_execbuffer*  cmd;
@@ -961,12 +962,20 @@ NTSTATUS CtlSubmitCommand(IN WDFREQUEST Request, IN size_t InputBufferLength, OU
         UpdateResourceState(virglContext, boHandles, cmd->num_bo_handles, TRUE, fenceId);
 
         // reset current node size
-        ReallocVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, cmd->size + boHandlesSize);
+        alignSize = ROUND_UP(cmd->size + boHandlesSize, PAGE_SIZE);
+        if (ReallocVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, memoryNode->Buffer.Size, alignSize))
+        {
+            memoryNode->Buffer.Size = alignSize;
+        }
     }
     else
     {
         // reset current node size
-        ReallocVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, cmd->size);
+        alignSize = ROUND_UP(cmd->size, PAGE_SIZE);
+        if (ReallocVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, memoryNode->Buffer.Size, alignSize))
+        {
+            memoryNode->Buffer.Size = alignSize;
+        }
     }
 
     return SubmitCommand(virglContext->DeviceContext, virglContext->Id, memoryNode, cmd->size, boHandles, cmd->num_bo_handles, fenceId, outFence);
@@ -1020,7 +1029,7 @@ NTSTATUS CtlAllocateVgpuMemory(IN WDFREQUEST Request, IN size_t OutputBufferLeng
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    memoryNode->Buffer.Size = cmd->size;
+    memoryNode->Buffer.Size = ROUND_UP(cmd->size, PAGE_SIZE);
     if (!AllocateVgpuMemory(memoryNode->Buffer.Size, &memoryNode->Buffer.Memory))
     {
         ExFreeToLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
@@ -1032,7 +1041,7 @@ NTSTATUS CtlAllocateVgpuMemory(IN WDFREQUEST Request, IN size_t OutputBufferLeng
     memoryNode->Buffer.Share.KernelAddress = memoryNode->Buffer.Memory.VirtualAddress;
     if (!CreateUserShareMemory(&memoryNode->Buffer.Share))
     {
-        FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress);
+        FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, memoryNode->Buffer.Size);
         ExFreeToLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
         VGPU_DEBUG_PRINT("create use share memory failed");
         return STATUS_UNSUCCESSFUL;
@@ -1079,7 +1088,7 @@ NTSTATUS CtlFreeVgpuMemory(IN WDFREQUEST Request, IN size_t InputBufferLength, O
     }
 
     DeleteUserShareMemory(&memoryNode->Buffer.Share);
-    FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress);
+    FreeVgpuMemory(memoryNode->Buffer.Memory.VirtualAddress, memoryNode->Buffer.Size);
     ExFreeToLookasideListEx(&virglContext->DeviceContext->VgpuMemoryNodeLookAsideList, memoryNode);
 
     return status;

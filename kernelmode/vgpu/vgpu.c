@@ -85,7 +85,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 KeSetEvent(buffer->FenceObject, IO_NO_INCREMENT, FALSE);
             }
 
-            FreeVgpuMemory(buffer->pDataBuf->Buffer.Memory.VirtualAddress);
+            FreeVgpuMemory(buffer->pDataBuf->Buffer.Memory.VirtualAddress, buffer->pDataBuf->Buffer.Size);
             ExFreeToLookasideListEx(&Context->VgpuMemoryNodeLookAsideList, buffer->pDataBuf);
             FreeCommandBuffer(Context, buffer);
             break;
