@@ -95,7 +95,7 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
             PVIRGL_CONTEXT virglContext = GetVirglContextFromListUnsafe(header->ctx_id);
             if (virglContext)
             {
-                struct virtio_gpu_resource_map_blob* cmd = (struct virtio_gpu_resource_map_blob*)buffer->pRespBuf;
+                struct virtio_gpu_resource_map_blob* cmd = (struct virtio_gpu_resource_map_blob*)buffer->pBuf;
                 struct virtio_gpu_resp_map_info* resp = (struct virtio_gpu_resp_map_info*)buffer->pRespBuf;
                 //FIXME: how to use map_info ?
                 MapBlobResourceCallback(virglContext, cmd->resource_id, resp->gpa, resp->size);
