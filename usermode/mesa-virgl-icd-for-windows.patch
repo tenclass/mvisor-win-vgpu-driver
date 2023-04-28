@@ -1,6 +1,6 @@
-From 35cb38e2ddc46a1b0f2f2351e813f10a417434f1 Mon Sep 17 00:00:00 2001
+From 5e2ca3ae0d9ffa55ec3b7133a76903003d0369f2 Mon Sep 17 00:00:00 2001
 From: cair <rui.cai@tenclass.com>
-Date: Thu, 16 Mar 2023 22:47:58 +0800
+Date: Fri, 28 Apr 2023 18:14:42 +0800
 Subject: [PATCH] mesa virgl icd for windows
 
 ---
@@ -10,7 +10,7 @@ Subject: [PATCH] mesa virgl icd for windows
  include/linuz/xf86drm.h                       | 899 ++++++++++++++++++
  src/gallium/drivers/virgl/meson.build         |   2 +-
  src/gallium/drivers/virgl/virgl_context.c     |   9 +-
- src/gallium/drivers/virgl/virgl_resource.c    |  59 +-
+ src/gallium/drivers/virgl/virgl_resource.c    |  60 +-
  src/gallium/drivers/virgl/virgl_resource.h    |   9 +
  src/gallium/drivers/virgl/virgl_screen.c      |  43 +-
  src/gallium/drivers/virgl/virgl_video.c       |   4 +-
@@ -27,7 +27,7 @@ Subject: [PATCH] mesa virgl icd for windows
  src/gallium/winsys/virgl/lib/vgpu_api.c       | 263 +++++
  src/gallium/winsys/virgl/lib/vgpu_api.h       |  46 +
  src/mesa/main/version.c                       |   2 +-
- 23 files changed, 2122 insertions(+), 56 deletions(-)
+ 23 files changed, 2123 insertions(+), 56 deletions(-)
  create mode 100644 include/linuz/ioccom.h
  create mode 100644 include/linuz/xf86drm.h
  create mode 100644 src/gallium/winsys/virgl/lib/ioctl.h
@@ -1180,7 +1180,7 @@ index 40d1155bea7..32ae912c0b3 100644
  
  static void virgl_fence_server_sync(struct pipe_context *ctx,
 diff --git a/src/gallium/drivers/virgl/virgl_resource.c b/src/gallium/drivers/virgl/virgl_resource.c
-index 43f92af6923..b9a6bac433f 100644
+index 43f92af6923..beee2bf7fd2 100644
 --- a/src/gallium/drivers/virgl/virgl_resource.c
 +++ b/src/gallium/drivers/virgl/virgl_resource.c
 @@ -36,6 +36,9 @@
@@ -1288,12 +1288,13 @@ index 43f92af6923..b9a6bac433f 100644
     res->clean_mask = (1 << VR_MAX_TEXTURE_2D_LEVELS) - 1;
  
     if (templ->target == PIPE_BUFFER) {
-@@ -835,6 +873,11 @@ static void virgl_buffer_subdata(struct pipe_context *pipe,
+@@ -835,6 +873,12 @@ static void virgl_buffer_subdata(struct pipe_context *pipe,
     }
  
     u_default_buffer_subdata(pipe, resource, usage, offset, size, data);
 +
-+   if (resource->flags == 0 && usage == 0 && !(offset == 0 && size == resource->width0)) {
++   struct virgl_winsys *vws = virgl_screen(vctx->base.screen)->vws;
++   if (!vws->supports_coherent) {
 +      // flush cmd to update host resource immediately in case that cinema4d got dirty screens
 +      virgl_flush_eq(vctx, NULL, NULL);
 +   }
@@ -2905,5 +2906,5 @@ index 2f36a44ddee..2bccb107c10 100644
  		     ctx->Version / 10, ctx->Version % 10,
  		     _mesa_is_desktop_gl_core(ctx) ? " (Core Profile)" :
 -- 
-2.29.2.windows.2
+2.38.1.windows.1
 
