@@ -112,7 +112,6 @@ VOID VirtioVgpuReadFromQueue(PDEVICE_CONTEXT Context, struct virtqueue* pVirtQue
                 struct virtio_gpu_transfer_host_3d* transfer = (struct virtio_gpu_transfer_host_3d*)buffer->pBuf;
                 UpdateResourceState(virglContext, &((ULONG32)transfer->resource_id), 1, FALSE, header->fence_id);
             }
-            break;
         }
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
         case VIRTIO_GPU_CMD_RESOURCE_CREATE_3D:
