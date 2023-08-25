@@ -21,7 +21,7 @@ By the way, we have created 70 VMs on a single T4 card with 16G video memory, ea
 ### Kernel Model Driver
 &nbsp;&nbsp;&nbsp;&nbsp;Build Environment: vs2019 + wdk10.0
 
-&nbsp;&nbsp;&nbsp;&nbsp;It's a WDF kernel model driver, after building, you would get <b>vgpu.sys</b>, <b>vgpu.inf</b> and <b>vgpu.cat</b> in the build directory.
+&nbsp;&nbsp;&nbsp;&nbsp;It's a WDF kernel model driver, after building, you will get <b>vgpu.sys</b>, <b>vgpu.inf</b> and <b>vgpu.cat</b> in the build directory.
 
 ## Install
 1. Change you guest VM to <b>test-sign mode</b>, otherwise the driver would not work because the windows driver sign-check.
