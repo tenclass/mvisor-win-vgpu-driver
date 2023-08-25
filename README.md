@@ -16,9 +16,7 @@ By the way, we have created 70 VMs on a single T4 card with 16G video memory, ea
 ### User Model Driver
 &nbsp;&nbsp;&nbsp;&nbsp;Build Environment: vs2019 or MinGW-W64
 
-#### Steps:
-1. Run build.bat in the usermode directory, it will download the Mesa project, patch it, and build it automatically
-2. After building, you will get <b>MvisorVGPUx64.dll</b> and <b>opengl32.dll</b> in the build directory.
+&nbsp;&nbsp;&nbsp;&nbsp;Run <b>build.bat</b> in the usermode directory, it will download the Mesa project, patch it, and build it automatically. After building, you will get &nbsp;&nbsp;&nbsp;&nbsp;<b>MvisorVGPUx64.dll</b> and <b>opengl32.dll</b> in the build directory.
 
 ### Kernel Model Driver
 &nbsp;&nbsp;&nbsp;&nbsp;Build Environment: vs2019 + wdk10.0
@@ -26,12 +24,53 @@ By the way, we have created 70 VMs on a single T4 card with 16G video memory, ea
 &nbsp;&nbsp;&nbsp;&nbsp;It's a WDF kernel model driver, after building, you would get <b>vgpu.sys</b>, <b>vgpu.inf</b> and <b>vgpu.cat</b> in the build directory.
 
 ## Install
-1. Change you guest vm to <b>test-sign mode</b>, otherwise the driver would not work because the windows driver sign-check.
-2. Just run <b>install.bat</b> in out release package, it will help you to prepare the environment and install the drivers.
+1. Change you guest VM to <b>test-sign mode</b>, otherwise the driver would not work because the windows driver sign-check.
+2. Just run <b>install.bat</b> in our release package, it will help you to prepare the environment and install the drivers.
 
 ## Current Status
-1. We chose Direct-IO as the data transport type between usermode and kernelmode, but using Nether-IO would get better performance than Direct-IO
-2. We have implemented all the features supported on linux host, but the blob feature was not supported in vm migration.
+1. You need to add this part of config to let Mvisor create VM with vgpu device.
+```c
+  - class: virtio-vgpu
+    memory: 1G
+    staging: Yes
+    blob: Yes
+    node: /dev/dri/renderD128
+```
+2. We chose Direct-IO as the data transport type between usermode and kernelmode, but using Nether-IO would get better performance than Direct-IO.
+3. We have implemented all the features supported on linux host, but the blob feature was not supported in VM migration.
+4. In order to use blob feature, you may need to patch the vrend_state.inferred_gl_caching_type in libvirglrenderer to let your guest driver get VIRGL_CAP_ARB_BUFFER_STORAGE. 
+```c
+   if (has_feature(feat_arb_buffer_storage) && !vrend_state.use_external_blob) {
+      const char *vendor = (const char *)glGetString(GL_VENDOR);
+      bool is_mesa = ((strstr(renderer, "Mesa") != NULL) || (strstr(renderer, "DRM") != NULL) ||
+                      (strstr(renderer, "llvmpipe") != NULL));
+      /*
+       * Intel GPUs (aside from Atom, which doesn't expose GL4.5) are cache-coherent.
+       * Mesa AMDGPUs use write-combine mappings for coherent/persistent memory (see
+       * RADEON_FLAG_GTT_WC in si_buffer.c/r600_buffer_common.c). For Nvidia, we can guess and
+       * check.  Long term, maybe a GL extension or using VK could replace these heuristics.
+       *
+       * Note Intel VMX ignores the caching type returned from virglrenderer, while AMD SVM and
+       * ARM honor it.
+       */
+      if (is_mesa) {
+         if (strstr(vendor, "Intel") != NULL)
+            vrend_state.inferred_gl_caching_type = VIRGL_RENDERER_MAP_CACHE_CACHED;
+         else if (strstr(vendor, "AMD") != NULL)
+            vrend_state.inferred_gl_caching_type = VIRGL_RENDERER_MAP_CACHE_WC;
+         else if (strstr(vendor, "Mesa") != NULL)
+            vrend_state.inferred_gl_caching_type = VIRGL_RENDERER_MAP_CACHE_CACHED;
+      } else {
+         /* This is an educated guess since things don't explode with VMX + Nvidia. */
+         if (strstr(renderer, "NVIDIA") != NULL)
+            vrend_state.inferred_gl_caching_type = VIRGL_RENDERER_MAP_CACHE_UNCACHED;
+      }
+
+      if (vrend_state.inferred_gl_caching_type)
+         caps->v2.capability_bits |= VIRGL_CAP_ARB_BUFFER_STORAGE;
+   }
+
+```
 
 ##  References
 1. https://github.com/Keenuts/virtio-gpu-win-icd
