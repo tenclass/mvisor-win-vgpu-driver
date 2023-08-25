@@ -1,9 +1,9 @@
 # Mvisor Windows Guest VGPU Driver
 
 ## Abstract
-1. A full Windows guest OpenGL driver implemention for the <b>Mvisor virtio-vgpu device</b>, it provides OpenGL 4.2 by delivering the Mesa virgl opengl render commands from guest to host, then the Virglrenderer model would help to consume these commands on the host.
-2. We have tested it by using <b>Cinema4D</b> and <b>GPUTest</b> on windows 10 guest, the driver worked very nice. 
-3. We can use Mvisor+VGPU to create a VM with OpenGL acceleration, <b>regardless of the limitations of graphics card virtualization</b>.
+- A full Windows guest OpenGL driver implemention for the <b>Mvisor virtio-vgpu device</b>, it provides OpenGL 4.2 by delivering the Mesa virgl opengl render commands from guest to host, then the Virglrenderer model would help to consume these commands on the host.
+- We have tested it by using <b>Cinema4D</b> and <b>GPUTest</b> on windows 10 guest, the driver worked very nice. 
+- We can use Mvisor+VGPU to create a VM with OpenGL acceleration, <b>regardless of the limitations of graphics card virtualization</b>.
 By the way, we have created 70 VMs on a single T4 card with 16G video memory, each running Cinema 4D rendering, the operation of the VM (Virtual Machine) was still very smooth.
 
 ## Screenshot
@@ -31,7 +31,7 @@ bcdedit.exe /set testsigning on
 2. Just run <b>install.bat</b> in our release package, it will help you to prepare the environment and install the drivers.
 
 ## Current Status
-1. You need to add this part of config to let Mvisor create VM with vgpu device.
+- You need to add this part of config to let Mvisor create VM with vgpu device.
 ```c
   - class: virtio-vgpu
     memory: 1G
@@ -39,9 +39,9 @@ bcdedit.exe /set testsigning on
     blob: Yes
     node: /dev/dri/renderD128
 ```
-2. We chose Direct-IO as the data transport type between usermode and kernelmode, but using Nether-IO would get better performance than Direct-IO.
-3. We have implemented all the features supported on linux host, but the blob feature was not supported in VM migration.
-4. In order to use blob feature, you may need to patch the vrend_state.inferred_gl_caching_type in libvirglrenderer to let your guest driver get VIRGL_CAP_ARB_BUFFER_STORAGE. 
+- We chose Direct-IO as the data transport type between usermode and kernelmode, but using Nether-IO would get better performance than Direct-IO.
+- We have implemented all the features supported on linux host, but the blob feature was not supported in VM migration.
+- In order to use blob feature, you may need to patch the vrend_state.inferred_gl_caching_type in libvirglrenderer to let your guest driver get VIRGL_CAP_ARB_BUFFER_STORAGE. 
 ```c
    if (has_feature(feat_arb_buffer_storage) && !vrend_state.use_external_blob) {
       const char *vendor = (const char *)glGetString(GL_VENDOR);
@@ -76,6 +76,6 @@ bcdedit.exe /set testsigning on
 ```
 
 ##  References
-1. https://github.com/Keenuts/virtio-gpu-win-icd
-2. https://github.com/kjliew/qemu-3dfx
-3. https://gitlab.freedesktop.org/mesa/mesa
+- https://github.com/Keenuts/virtio-gpu-win-icd
+- https://github.com/kjliew/qemu-3dfx
+- https://gitlab.freedesktop.org/mesa/mesa
