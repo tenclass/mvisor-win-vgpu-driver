@@ -16,7 +16,7 @@ By the way, we have created 70 VMs on a single T4 card with 16G video memory, ea
 ### User Model Driver
 &nbsp;&nbsp;&nbsp;&nbsp;Build Environment: vs2019 or MinGW-W64
 
-&nbsp;&nbsp;&nbsp;&nbsp;Run <b>build.bat</b> in the usermode directory, it will download the Mesa project, patch it, and build it automatically. After building, you will get &nbsp;&nbsp;&nbsp;&nbsp;<b>MvisorVGPUx64.dll</b> and <b>opengl32.dll</b> in the build directory.
+&nbsp;&nbsp;&nbsp;&nbsp;Run <b>build.bat</b> in the usermode directory, it will download the Mesa project, patch it, and build it automatically. After building, you will get <b>MvisorVGPUx64.dll</b> and <b>opengl32.dll</b> in the build directory.
 
 ### Kernel Model Driver
 &nbsp;&nbsp;&nbsp;&nbsp;Build Environment: vs2019 + wdk10.0
