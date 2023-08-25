@@ -1,4 +1,3 @@
-@REM Run it in a VS build command window
 @echo start building
 @echo mesa install path=%1
 
