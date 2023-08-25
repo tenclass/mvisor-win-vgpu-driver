@@ -24,7 +24,10 @@ By the way, we have created 70 VMs on a single T4 card with 16G video memory, ea
 &nbsp;&nbsp;&nbsp;&nbsp;It's a WDF kernel model driver, after building, you will get <b>vgpu.sys</b>, <b>vgpu.inf</b> and <b>vgpu.cat</b> in the build directory.
 
 ## Install
-1. Change you guest VM to <b>test-sign mode</b>, otherwise the driver would not work because the windows driver sign-check.
+1. Change you guest VM to <b>test-sign mode</b>, otherwise the driver would not work because of the windows driver sign-check.
+```c
+bcdedit.exe /set testsigning on
+```
 2. Just run <b>install.bat</b> in our release package, it will help you to prepare the environment and install the drivers.
 
 ## Current Status
