@@ -42,7 +42,7 @@ bcdedit.exe /set testsigning on
     blob: Yes
     node: /dev/dri/renderD128
 ```
-- We chose Direct-IO as the data transport type between usermode and kernelmode, but using Nether-IO would get better performance than Direct-IO.
+- We choose Direct-IO as the data transport type between usermode and kernelmode in guest vm now, but using Nether-IO may get better performance.
 - We have implemented all the features supported on linux host, but the blob feature was not supported in VM migration.
 - In order to use blob feature, you may need to patch the vrend_state.inferred_gl_caching_type in [Virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer) to let your guest driver get VIRGL_CAP_ARB_BUFFER_STORAGE. 
 ```c
