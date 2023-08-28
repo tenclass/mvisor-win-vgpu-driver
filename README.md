@@ -4,7 +4,7 @@
 - A full Windows guest OpenGL driver implemention for the [Mvisor](https://github.com/tenclass/mvisor) <b>virtio-vgpu device</b>, it provides <b>OpenGL 4.2</b> by translating OpenGL api requests to Mesa Virgl Render Commands, and then delivering these commands from guest application to [Virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer) on the host.
 - We have tested it by using <b>Cinema4D</b> and <b>[GPUTest](https://www.geeks3d.com/gputest/)</b> on windows 10 guest, the driver worked very nice. 
 - We can use Mvisor+VGPU to create a VM with OpenGL acceleration, <b>regardless of the limitations of graphics card virtualization</b>.
-By the way, we have created 70 VMs on a single T4 card with 16G video memory, each running Cinema 4D rendering, the operation of the VM (Virtual Machine) was still very smooth.
+By the way, we have created 20 VMs on a single T4 card with 16G video memory, each running Cinema 4D rendering, the operation of the VM (Virtual Machine) was still very smooth.
 
 ## Screenshot
 ### GpuTest
