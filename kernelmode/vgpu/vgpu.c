@@ -24,6 +24,11 @@
 #include "memory.h"
 #include "idr.h"
 
+// gloval variables
+CAPSETS Capsets;
+LIST_ENTRY VirglContextList;
+KSPIN_LOCK VirglContextListSpinLock;
+
 #pragma code_seg(push)
 #pragma code_seg()
 

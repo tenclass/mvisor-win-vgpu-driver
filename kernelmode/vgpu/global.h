@@ -110,9 +110,9 @@ typedef struct _VGPU_BUFFER {
 }VGPU_BUFFER, * PVGPU_BUFFER;
 
 // gloval variables
-CAPSETS     Capsets;
-LIST_ENTRY  VirglContextList;
-KSPIN_LOCK  VirglContextListSpinLock;
+extern CAPSETS     Capsets;
+extern LIST_ENTRY VirglContextList;
+extern KSPIN_LOCK VirglContextListSpinLock;
 
 #define VGPU_DEBUG_TAG() KdPrint(("[Mvisor] Func:%s Line:%d \n", __FUNCTION__, __LINE__))
 #define VGPU_DEBUG_PRINT(string) KdPrint(("[Mvisor] Func:%s Line:%d " string "\n", __FUNCTION__, __LINE__))
