@@ -32,7 +32,7 @@ By the way, we have created 20 VMs on a single T4 card with 16G video memory, ea
 &nbsp;&nbsp;&nbsp;&nbsp;It's a WDF kernel mode driver, after building, you will get <b>vgpu.sys</b>, <b>vgpu.inf</b> and <b>vgpu.cat</b> in the build directory.
 
 ## Install
-1. Change you guest VM to <b>test-sign mode</b>, otherwise the driver would not work because of the windows driver sign-check.
+1. Change you guest VM to <b>test-sign mode</b> and reboot, otherwise the driver would not work because of the windows driver sign-check.
 ```c
 bcdedit.exe /set testsigning on
 ```
